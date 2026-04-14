@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 import { SessionProvider } from "next-auth/react";
-import { session, projectDataSource } from "@/composition";
+import { session } from "@/composition";
 import ErrorHandler from "@/common/ui/ErrorHandler";
 import SessionBarrier from "@/features/auth/view/SessionBarrier";
-import ProjectsContextProvider from "@/features/projects/view/ProjectsContextProvider";
+import ProjectListContextProvider from "@/features/projects/view/ProjectListContextProvider";
+import ProjectDetailsContextProvider from "@/features/projects/view/ProjectDetailsContextProvider";
 import {
   SidebarTogglableContextProvider,
   SplitView,
@@ -19,18 +20,17 @@ export default async function Layout({
     return redirect("/api/auth/signin");
   }
 
-  const projects = await projectDataSource.getProjects();
- 
-
   return (
     <ErrorHandler>
       <SessionProvider>
         <SessionBarrier>
-          <ProjectsContextProvider initialProjects={projects}>
-            <SidebarTogglableContextProvider>
-              <SplitView>{children}</SplitView>
-            </SidebarTogglableContextProvider>
-          </ProjectsContextProvider>
+          <ProjectListContextProvider>
+            <ProjectDetailsContextProvider>
+              <SidebarTogglableContextProvider>
+                <SplitView>{children}</SplitView>
+              </SidebarTogglableContextProvider>
+            </ProjectDetailsContextProvider>
+          </ProjectListContextProvider>
         </SessionBarrier>
       </SessionProvider>
     </ErrorHandler>

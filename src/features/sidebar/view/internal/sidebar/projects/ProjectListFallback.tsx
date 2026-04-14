@@ -1,13 +1,12 @@
 "use client"
 
-import { useContext } from "react"
-import { ProjectsContext } from "@/common"
 import SpacedList from "@/common/ui/SpacedList"
 import PopulatedProjectList from "./PopulatedProjectList"
 import { Skeleton as ProjectListItemSkeleton } from "./ProjectListItem"
+import { useProjectList } from "@/features/projects/view/ProjectListContext"
 
 const StaleProjectList = () => {
-  const { projects } = useContext(ProjectsContext)
+  const { projects } = useProjectList()
   if (projects.length > 0) {
     return <PopulatedProjectList projects={projects} />
   } else {

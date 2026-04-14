@@ -1,14 +1,17 @@
-'use client'  
+'use client'
 
-import { Suspense, useContext } from "react"
+import { Suspense } from "react"
 import { Typography } from "@mui/material"
 import ProjectListFallback from "./ProjectListFallback"
 import PopulatedProjectList from "./PopulatedProjectList"
-import { ProjectsContext } from "@/common"
+import { useProjectList } from "@/features/projects/view/ProjectListContext"
 
 const ProjectList = () => {
+  const { projects, loading } = useProjectList()
 
-  const { projects } = useContext(ProjectsContext)
+  if (loading && projects.length === 0) {
+    return <ProjectListFallback />
+  }
 
   return (
     <Suspense fallback={<ProjectListFallback/>}>
