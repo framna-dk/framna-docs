@@ -1,6 +1,6 @@
 import { Box, SxProps } from "@mui/system"
 import { Avatar } from "@mui/material"
-import { Project } from "@/features/projects/domain"
+import { ProjectSummary } from "@/features/projects/domain"
 import { getSvgPath } from "figma-squircle"
 
 function ProjectAvatar({
@@ -8,7 +8,7 @@ function ProjectAvatar({
   width,
   height
 }: {
-  project: Project,
+  project: ProjectSummary,
   width: number,
   height: number
 }) {

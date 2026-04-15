@@ -10,10 +10,8 @@ import {
   Typography,
 } from "@mui/material";
 import MenuItemHover from "@/common/ui/MenuItemHover";
-import { Project } from "@/features/projects/domain";
+import { ProjectSummary } from "@/features/projects/domain";
 import { useProjectSelection } from "@/features/projects/data";
-import { useContext } from "react";
-import { ProjectsContext } from "@/common";
 import ProjectAvatar, {
   Squircle as ProjectAvatarSquircle,
 } from "./ProjectAvatar";
@@ -21,10 +19,9 @@ import { useCloseSidebarOnSelection } from "@/features/sidebar/data";
 
 const AVATAR_SIZE = { width: 40, height: 40 };
 
-const ProjectListItem = ({ project }: { project: Project }) => {
-  const { project: selectedProject, selectProject } = useProjectSelection();
-  const { refreshProjects } = useContext(ProjectsContext);
-  const selected = project.id === selectedProject?.id;
+const ProjectListItem = ({ project }: { project: ProjectSummary }) => {
+  const { selectedOwner, selectedName, selectProject } = useProjectSelection();
+  const selected = project.owner === selectedOwner && project.name === selectedName;
   const { closeSidebarIfNeeded } = useCloseSidebarOnSelection();
 
   return (
@@ -33,7 +30,6 @@ const ProjectListItem = ({ project }: { project: Project }) => {
       onSelect={() => {
         closeSidebarIfNeeded();
         selectProject(project);
-        refreshProjects();
       }}
       avatar={
         <ProjectAvatar

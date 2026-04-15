@@ -17,13 +17,12 @@ import {
 } from "@/common"
 import {
   GitHubLoginDataSource,
-  GitHubProjectDataSource,
-  GitHubRepositoryDataSource
+  GitHubProjectListDataSource,
+  GitHubProjectDetailsDataSource
 } from "@/features/projects/data"
 import {
-  CachingProjectDataSource,
-  FilteringGitHubRepositoryDataSource,
-  ProjectRepository
+  CachingProjectListDataSource,
+  ProjectListRepository
 } from "@/features/projects/domain"
 import {
   GitHubOAuthTokenRefresher
@@ -175,11 +174,6 @@ const projectUserDataRepository = new KeyValueUserDataRepository({
   baseKey: "projects"
 })
 
-export const projectRepository = new ProjectRepository({
-  userIDReader: session,
-  repository: projectUserDataRepository
-})
-
 export const encryptionService = new RsaEncryptionService({
   publicKey: Buffer.from(env.getOrThrow("ENCRYPTION_PUBLIC_KEY_BASE_64"), "base64").toString("utf-8"),
   privateKey: Buffer.from(env.getOrThrow("ENCRYPTION_PRIVATE_KEY_BASE_64"), "base64").toString("utf-8")
@@ -187,29 +181,43 @@ export const encryptionService = new RsaEncryptionService({
 
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
-export const projectDataSource = new CachingProjectDataSource({
-  dataSource: new GitHubProjectDataSource({
-    repositoryDataSource: new FilteringGitHubRepositoryDataSource({
-      hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES")),
-      dataSource: new GitHubRepositoryDataSource({
-        loginsDataSource: new GitHubLoginDataSource({
-          graphQlClient: userGitHubClient
-        }),
-        graphQlClient: userGitHubClient,
-        repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
-        projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME")
-      })
-    }),
-    repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
-    encryptionService: encryptionService,
-    remoteConfigEncoder: remoteConfigEncoder
+const gitHubProjectListDataSource = new GitHubProjectListDataSource({
+  loginsDataSource: new GitHubLoginDataSource({
+    graphQlClient: userGitHubClient
   }),
-  repository: projectRepository
+  graphQlClient: userGitHubClient,
+  repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
+  projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
+  hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
+})
+
+const projectListUserDataRepository = new KeyValueUserDataRepository({
+  store: new RedisKeyValueStore(env.getOrThrow("REDIS_URL")),
+  baseKey: "projectList"
+})
+
+const projectListRepository = new ProjectListRepository({
+  userIDReader: session,
+  repository: projectListUserDataRepository
+})
+
+export const projectListDataSource = new CachingProjectListDataSource({
+  dataSource: gitHubProjectListDataSource,
+  repository: projectListRepository
+})
+
+export const projectDetailsDataSource = new GitHubProjectDetailsDataSource({
+  graphQlClient: userGitHubClient,
+  repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
+  projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
+  encryptionService: encryptionService,
+  remoteConfigEncoder: remoteConfigEncoder
 })
 
 export const logOutHandler = new ErrorIgnoringLogOutHandler(
   new CompositeLogOutHandler([
-    new UserDataCleanUpLogOutHandler(session, projectUserDataRepository)
+    new UserDataCleanUpLogOutHandler(session, projectUserDataRepository),
+    new UserDataCleanUpLogOutHandler(session, projectListUserDataRepository)
   ])
 )
 
