@@ -1,5 +1,4 @@
-export { default as GitHubProjectDataSource } from "./GitHubProjectDataSource"
-export * from "./GitHubProjectDataSource"
 export { default as useProjectSelection } from "./useProjectSelection"
 export { default as GitHubLoginDataSource } from "./GitHubLoginDataSource"
-export { default as GitHubRepositoryDataSource } from "./GitHubRepositoryDataSource"
+export { default as GitHubProjectListDataSource } from "./GitHubProjectListDataSource"
+export { default as GitHubProjectDetailsDataSource } from "./GitHubProjectDetailsDataSource"

@@ -9,9 +9,28 @@ updates:
         patterns:
           - "react"
           - "react-*"
+          - "next"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      next-typescript-eslint:
+        patterns:
+          - "eslint"
+          - "eslint-config-next"
+          - "typescript"
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
       everything-else:
         patterns:
           - "*"
         exclude-patterns:
           - "react"
           - "react-*"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "eslint"
+          - "eslint-config-next"
+          - "typescript"
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
