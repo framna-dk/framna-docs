@@ -15,7 +15,7 @@ import IGitHubClient, {
   PullRequestFile
 } from "./IGitHubClient"
 
-const GITHUB_API_VERSION = { "X-GitHub-Api-Version": "2022-11-28" } as const
+const GITHUB_API_VERSION = { "X-GitHub-Api-Version": "2026-03-10" } as const
 
 interface IGitHubOAuthTokenDataSource {
   getOAuthToken(): Promise<{ accessToken: string }>
