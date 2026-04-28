@@ -15,6 +15,8 @@ import IGitHubClient, {
   PullRequestFile
 } from "./IGitHubClient"
 
+const GITHUB_API_VERSION = { "X-GitHub-Api-Version": "2022-11-28" } as const
+
 interface IGitHubOAuthTokenDataSource {
   getOAuthToken(): Promise<{ accessToken: string }>
 }
@@ -26,7 +28,7 @@ type InstallationAuthenticator = (installationId: number) => Promise<{token: str
 export default class GitHubClient implements IGitHubClient {
   private readonly oauthTokenDataSource: IGitHubOAuthTokenDataSource
   private readonly installationAuthenticator: InstallationAuthenticator
-  
+
   constructor(config: {
     appId: string
     clientId: string
@@ -45,25 +47,22 @@ export default class GitHubClient implements IGitHubClient {
       return await appAuth({ type: "installation", installationId })
     }
   }
-  
-  private makeOctokit(auth: string): Octokit {
-    return new Octokit({ auth, request: { headers: { "X-GitHub-Api-Version": "2022-11-28" } } })
-  }
 
   async graphql(request: GraphQLQueryRequest): Promise<GraphQlQueryResponse> {
     const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
-    const octokit = this.makeOctokit(oauthToken.accessToken)
+    const octokit = new Octokit({ auth: oauthToken.accessToken })
     return await octokit.graphql(request.query, request.variables)
   }
 
   async getRepositoryContent(request: GetRepositoryContentRequest): Promise<RepositoryContent> {
     const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
-    const octokit = this.makeOctokit(oauthToken.accessToken)
+    const octokit = new Octokit({ auth: oauthToken.accessToken })
     const response = await octokit.rest.repos.getContent({
       owner: request.repositoryOwner,
       repo: request.repositoryName,
       path: request.path,
-      ref: request.ref
+      ref: request.ref,
+      headers: GITHUB_API_VERSION
     })
     const item = response.data as GitHubContentItem
     return { downloadURL: item.download_url }
@@ -71,11 +70,12 @@ export default class GitHubClient implements IGitHubClient {
 
   async getPullRequestFiles(request: GetPullRequestFilesRequest): Promise<PullRequestFile[]> {
     const auth = await this.installationAuthenticator(request.appInstallationId)
-    const octokit = this.makeOctokit(auth.token)
+    const octokit = new Octokit({ auth: auth.token })
     const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
       owner: request.repositoryOwner,
       repo: request.repositoryName,
       pull_number: request.pullRequestNumber,
+      headers: GITHUB_API_VERSION
     })
     return files.map(file => {
       return { filename: file.filename, status: file.status }
@@ -84,11 +84,12 @@ export default class GitHubClient implements IGitHubClient {
 
   async getPullRequestComments(request: GetPullRequestCommentsRequest): Promise<PullRequestComment[]> {
     const auth = await this.installationAuthenticator(request.appInstallationId)
-    const octokit = this.makeOctokit(auth.token)
+    const octokit = new Octokit({ auth: auth.token })
     const comments = await octokit.paginate(octokit.rest.issues.listComments, {
       owner: request.repositoryOwner,
       repo: request.repositoryName,
       issue_number: request.pullRequestNumber,
+      headers: GITHUB_API_VERSION
     })
     const result: PullRequestComment[] = []
     for await (const comment of comments) {
@@ -106,33 +107,36 @@ export default class GitHubClient implements IGitHubClient {
 
   async addCommentToPullRequest(request: AddCommentToPullRequestRequest): Promise<void> {
     const auth = await this.installationAuthenticator(request.appInstallationId)
-    const octokit = this.makeOctokit(auth.token)
+    const octokit = new Octokit({ auth: auth.token })
     await octokit.rest.issues.createComment({
       owner: request.repositoryOwner,
       repo: request.repositoryName,
       issue_number: request.pullRequestNumber,
-      body: request.body
+      body: request.body,
+      headers: GITHUB_API_VERSION
     })
   }
 
   async updatePullRequestComment(request: UpdatePullRequestCommentRequest): Promise<void> {
     const auth = await this.installationAuthenticator(request.appInstallationId)
-    const octokit = this.makeOctokit(auth.token)
+    const octokit = new Octokit({ auth: auth.token })
     await octokit.rest.issues.updateComment({
       comment_id: request.commentId,
       owner: request.repositoryOwner,
       repo: request.repositoryName,
-      body: request.body
+      body: request.body,
+      headers: GITHUB_API_VERSION
     })
   }
 
   async compareCommitsWithBasehead(request: CompareCommitsRequest): Promise<CompareCommitsResponse> {
     const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
-    const octokit = this.makeOctokit(oauthToken.accessToken)
+    const octokit = new Octokit({ auth: oauthToken.accessToken })
     const response = await octokit.rest.repos.compareCommitsWithBasehead({
       owner: request.repositoryOwner,
       repo: request.repositoryName,
-      basehead: `${request.baseRefOid}...${request.headRefOid}`
+      basehead: `${request.baseRefOid}...${request.headRefOid}`,
+      headers: GITHUB_API_VERSION
     })
     return { mergeBaseSha: response.data.merge_base_commit.sha }
   }
