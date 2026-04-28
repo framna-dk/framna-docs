@@ -47,7 +47,7 @@ export default class GitHubClient implements IGitHubClient {
   }
   
   private makeOctokit(auth: string): Octokit {
-    return new Octokit({ auth, headers: { "X-GitHub-Api-Version": "2022-11-28" } })
+    return new Octokit({ auth, request: { headers: { "X-GitHub-Api-Version": "2022-11-28" } } })
   }
 
   async graphql(request: GraphQLQueryRequest): Promise<GraphQlQueryResponse> {
