@@ -4,6 +4,23 @@ import { IGitHubGraphQLClient } from "@/features/projects/domain"
 import { IEncryptionService } from "@/features/encrypt/EncryptionService"
 import { IRemoteConfigEncoder } from "@/features/projects/domain/RemoteConfigEncoder"
 
+const createSpecExistenceResponse = (
+  refs: { name: string; oid: string }[],
+  specs: { path: string }[],
+  existingPaths: string[]
+) => {
+  const result: Record<string, unknown> = { repository: {} }
+  refs.forEach((ref, ri) => {
+    specs.forEach((spec, si) => {
+      const alias = `r${ri}s${si}`
+      const exists = existingPaths.includes(spec.path)
+      ;(result.repository as Record<string, unknown>)[alias] = exists ? { oid: "abc" } : null
+    })
+    void ref
+  })
+  return result
+}
+
 const createMockGraphQLClient = (response: unknown = null): IGitHubGraphQLClient => ({
   graphql: jest.fn<() => Promise<unknown>>().mockResolvedValue(response)
 })
@@ -185,6 +202,26 @@ describe("GitHubProjectDetailsDataSource", () => {
         })
       )
     })
+
+    test("It fetches a repo by exact name when the repo has no suffix", async () => {
+      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
+      const successResponse = createRepositoryResponse({ name: "my-backend" })
+
+      const graphQlClient: IGitHubGraphQLClient = {
+        graphql: jest.fn<() => Promise<unknown>>()
+          .mockRejectedValueOnce(notFoundError)
+          .mockResolvedValueOnce(successResponse)
+      }
+      const sut = createSut({ graphQlClient })
+
+      const result = await sut.getProjectDetails("acme", "my-backend")
+
+      expect(result).not.toBeNull()
+      expect(graphQlClient.graphql).toHaveBeenCalledTimes(2)
+      expect((graphQlClient.graphql as jest.Mock).mock.calls[1][0]).toMatchObject({
+        variables: { owner: "acme", name: "my-backend" }
+      })
+    })
   })
 
   describe("versions", () => {
@@ -353,6 +390,165 @@ describe("GitHubProjectDetailsDataSource", () => {
       const result = await sut.getProjectDetails("acme", "my-project")
 
       expect(result!.versions[0].specifications.map(s => s.name)).toEqual(["alpha.yml", "middle.yml", "zebra.yml"])
+    })
+
+    describe("config-specified specifications", () => {
+      test("It uses config specifications instead of root tree entries when specifications are defined", async () => {
+        const phase1Response = createRepositoryResponse({
+          configYml: {
+            text: `
+specifications:
+  - path: services/user/openapi.yaml
+    name: User API
+`
+          },
+          branches: [{
+            name: "main",
+            target: { oid: "abc123", tree: { entries: [{ name: "not-a-spec.yml" }] } }
+          }]
+        })
+
+        const phase2Response = createSpecExistenceResponse(
+          [{ name: "main", oid: "abc123" }],
+          [{ path: "services/user/openapi.yaml" }],
+          ["services/user/openapi.yaml"]
+        )
+
+        const graphQlClient = createMockGraphQLClient(phase1Response)
+        ;(graphQlClient.graphql as jest.Mock).mockResolvedValueOnce(phase1Response)
+          .mockResolvedValueOnce(phase2Response)
+        const sut = createSut({ graphQlClient })
+
+        const result = await sut.getProjectDetails("acme", "my-project")
+
+        expect(result!.versions[0].specifications).toHaveLength(1)
+        expect(result!.versions[0].specifications[0].name).toBe("User API")
+        expect(result!.versions[0].specifications[0].id).toBe("services/user/openapi.yaml")
+      })
+
+      test("It falls back to full path as name when no name is specified", async () => {
+        const phase1Response = createRepositoryResponse({
+          configYml: {
+            text: `
+specifications:
+  - path: services/user/openapi.yaml
+`
+          },
+          branches: [{ name: "main", target: { oid: "abc123", tree: { entries: [] } } }]
+        })
+        const phase2Response = createSpecExistenceResponse(
+          [{ name: "main", oid: "abc123" }],
+          [{ path: "services/user/openapi.yaml" }],
+          ["services/user/openapi.yaml"]
+        )
+
+        const graphQlClient: IGitHubGraphQLClient = {
+          graphql: jest.fn<() => Promise<unknown>>()
+            .mockResolvedValueOnce(phase1Response)
+            .mockResolvedValueOnce(phase2Response)
+        }
+        const sut = createSut({ graphQlClient })
+
+        const result = await sut.getProjectDetails("acme", "my-project")
+
+        expect(result!.versions[0].specifications[0].name).toBe("services/user/openapi.yaml")
+      })
+
+      test("It excludes specs that don't exist in a given ref", async () => {
+        const phase1Response = createRepositoryResponse({
+          configYml: {
+            text: `
+specifications:
+  - path: services/user/openapi.yaml
+  - path: services/orders/openapi.yaml
+`
+          },
+          branches: [{ name: "main", target: { oid: "abc123", tree: { entries: [] } } }]
+        })
+        const phase2Response = createSpecExistenceResponse(
+          [{ name: "main", oid: "abc123" }],
+          [{ path: "services/user/openapi.yaml" }, { path: "services/orders/openapi.yaml" }],
+          ["services/user/openapi.yaml"]
+        )
+
+        const graphQlClient: IGitHubGraphQLClient = {
+          graphql: jest.fn<() => Promise<unknown>>()
+            .mockResolvedValueOnce(phase1Response)
+            .mockResolvedValueOnce(phase2Response)
+        }
+        const sut = createSut({ graphQlClient })
+
+        const result = await sut.getProjectDetails("acme", "my-project")
+
+        expect(result!.versions[0].specifications).toHaveLength(1)
+        expect(result!.versions[0].specifications[0].id).toBe("services/user/openapi.yaml")
+      })
+
+      test("It generates correct URLs for config-specified spec paths", async () => {
+        const phase1Response = createRepositoryResponse({
+          configYml: { text: "specifications:\n  - path: services/user/openapi.yaml" },
+          branches: [{ name: "main", target: { oid: "abc123", tree: { entries: [] } } }]
+        })
+        const phase2Response = createSpecExistenceResponse(
+          [{ name: "main", oid: "abc123" }],
+          [{ path: "services/user/openapi.yaml" }],
+          ["services/user/openapi.yaml"]
+        )
+
+        const graphQlClient: IGitHubGraphQLClient = {
+          graphql: jest.fn<() => Promise<unknown>>()
+            .mockResolvedValueOnce(phase1Response)
+            .mockResolvedValueOnce(phase2Response)
+        }
+        const sut = createSut({ graphQlClient })
+
+        const result = await sut.getProjectDetails("acme", "my-project")
+        const spec = result!.versions[0].specifications[0]
+
+        expect(spec.url).toBe("/api/blob/acme/my-project-openapi/services%2Fuser%2Fopenapi.yaml?ref=abc123")
+        expect(spec.editURL).toBe("https://github.com/acme/my-project-openapi/edit/main/services%2Fuser%2Fopenapi.yaml")
+      })
+
+      test("It generates diff URL for changed config-specified spec paths", async () => {
+        const phase1Response = createRepositoryResponse({
+          configYml: { text: "specifications:\n  - path: services/user/openapi.yaml" },
+          branches: [{ name: "feature", target: { oid: "feat123", tree: { entries: [] } } }],
+          pullRequests: [{
+            number: 7,
+            headRefName: "feature",
+            baseRefName: "main",
+            baseRefOid: "base123",
+            files: { nodes: [{ path: "services/user/openapi.yaml" }] }
+          }]
+        })
+        const phase2Response = createSpecExistenceResponse(
+          [{ name: "feature", oid: "feat123" }],
+          [{ path: "services/user/openapi.yaml" }],
+          ["services/user/openapi.yaml"]
+        )
+
+        const graphQlClient: IGitHubGraphQLClient = {
+          graphql: jest.fn<() => Promise<unknown>>()
+            .mockResolvedValueOnce(phase1Response)
+            .mockResolvedValueOnce(phase2Response)
+        }
+        const sut = createSut({ graphQlClient })
+
+        const result = await sut.getProjectDetails("acme", "my-project")
+        const spec = result!.versions[0].specifications[0]
+
+        expect(spec.diffURL).toBeDefined()
+        expect(spec.diffBaseBranch).toBe("main")
+      })
+
+      test("It does not make a second GraphQL call when no specifications are in config", async () => {
+        const graphQlClient = createMockGraphQLClient(createRepositoryResponse())
+        const sut = createSut({ graphQlClient })
+
+        await sut.getProjectDetails("acme", "my-project")
+
+        expect(graphQlClient.graphql).toHaveBeenCalledTimes(1)
+      })
     })
   })
 

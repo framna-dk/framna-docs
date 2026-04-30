@@ -8,7 +8,8 @@ import {
   ProjectConfigParser,
   IProjectConfig,
   ProjectConfigRemoteVersion,
-  ProjectConfigRemoteSpecification
+  ProjectConfigRemoteSpecification,
+  ProjectConfigSpecification
 } from "../domain"
 import RemoteConfig from "../domain/RemoteConfig"
 import { IRemoteConfigEncoder } from "../domain/RemoteConfigEncoder"
@@ -55,36 +56,43 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
   }
 
   async getProjectDetails(owner: string, repo: string): Promise<Project | null> {
-    const repoName = repo.endsWith(this.repositoryNameSuffix)
-      ? repo
-      : `${repo}${this.repositoryNameSuffix}`
+    const candidateNames = [
+      repo.endsWith(this.repositoryNameSuffix) ? repo : `${repo}${this.repositoryNameSuffix}`
+    ]
+    if (!repo.endsWith(this.repositoryNameSuffix)) {
+      candidateNames.push(repo)
+    }
 
-    let response: Awaited<ReturnType<typeof this.fetchRepository>>
-    try {
-      response = await this.fetchRepository(owner, repoName)
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        return null
+    for (const repoName of candidateNames) {
+      let response: Awaited<ReturnType<typeof this.fetchRepository>>
+      try {
+        response = await this.fetchRepository(owner, repoName)
+      } catch (error) {
+        if (this.isNotFoundError(error)) {
+          continue
+        }
+        throw error
       }
-      throw error
-    }
-    if (!response.repository) {
-      return null
+      if (!response.repository) {
+        continue
+      }
+
+      const repository = response.repository
+      const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
+
+      return await this.mapToProject({
+        owner,
+        name: repository.name,
+        defaultBranchRef: repository.defaultBranchRef,
+        configYml: repository.configYml,
+        configYaml: repository.configYaml,
+        branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+        tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+        pullRequests
+      })
     }
 
-    const repository = response.repository
-    const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
-
-    return this.mapToProject({
-      owner,
-      name: repository.name,
-      defaultBranchRef: repository.defaultBranchRef,
-      configYml: repository.configYml,
-      configYaml: repository.configYaml,
-      branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-      tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-      pullRequests
-    })
+    return null
   }
 
   private async fetchRepository(owner: string, name: string) {
@@ -172,7 +180,7 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     return map
   }
 
-  private mapToProject(data: {
+  private async mapToProject(data: {
     owner: string
     name: string
     defaultBranchRef: { name: string; target: { oid: string } }
@@ -181,13 +189,28 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     branches: GraphQLRef[]
     tags: GraphQLRef[]
     pullRequests: Map<string, { number: number; baseRefName: string; baseRefOid: string; changedFiles: string[] }>
-  }): Project {
+  }): Promise<Project> {
     const config = this.parseConfig(data.configYml, data.configYaml)
     const defaultName = data.name.replace(new RegExp(this.repositoryNameSuffix + "$"), "")
 
     let imageURL: string | undefined
     if (config?.image) {
       imageURL = `/api/blob/${data.owner}/${data.name}/${encodeURIComponent(config.image)}?ref=${data.defaultBranchRef.target.oid}`
+    }
+
+    const allRefs = [
+      ...data.branches.map(ref => ({ name: ref.name, oid: ref.target.oid })),
+      ...data.tags.map(ref => ({ name: ref.name, oid: ref.target.oid }))
+    ]
+
+    let specExistenceMap: Map<string, string[]> | null = null
+    if (config?.specifications && config.specifications.length > 0) {
+      specExistenceMap = await this.fetchSpecExistence(
+        data.owner,
+        data.name,
+        allRefs,
+        config.specifications
+      )
     }
 
     const branchVersions = data.branches.map(branch => {
@@ -197,12 +220,20 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
         repoName: data.name,
         ref: branch,
         isDefault: branch.name === data.defaultBranchRef.name,
-        pr
+        pr,
+        configSpecs: config?.specifications,
+        existingSpecPaths: specExistenceMap?.get(branch.name)
       })
     })
 
     const tagVersions = data.tags.map(tag =>
-      this.mapVersion({ owner: data.owner, repoName: data.name, ref: tag })
+      this.mapVersion({
+        owner: data.owner,
+        repoName: data.name,
+        ref: tag,
+        configSpecs: config?.specifications,
+        existingSpecPaths: specExistenceMap?.get(tag.name)
+      })
     )
 
     const versions = this.sortVersions(
@@ -227,6 +258,44 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     }
   }
 
+  private async fetchSpecExistence(
+    owner: string,
+    repoName: string,
+    refs: Array<{ name: string; oid: string }>,
+    specs: ProjectConfigSpecification[]
+  ): Promise<Map<string, string[]>> {
+    if (refs.length === 0 || specs.length === 0) return new Map()
+
+    const aliases = refs.flatMap((ref, ri) =>
+      specs.map((spec, si) =>
+        `r${ri}s${si}: object(expression: "${ref.oid}:${spec.path}") { ... on Blob { oid } }`
+      )
+    )
+
+    const query = `
+      query SpecExistence($owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) {
+          ${aliases.join("\n          ")}
+        }
+      }
+    `
+
+    const response = await this.graphQlClient.graphql({ query, variables: { owner, name: repoName } })
+
+    const result = new Map<string, string[]>()
+    refs.forEach((ref, ri) => {
+      const existingPaths: string[] = []
+      specs.forEach((spec, si) => {
+        const alias = `r${ri}s${si}`
+        if (response.repository?.[alias] != null) {
+          existingPaths.push(spec.path)
+        }
+      })
+      result.set(ref.name, existingPaths)
+    })
+    return result
+  }
+
   private parseConfig(configYml?: { text: string }, configYaml?: { text: string }): IProjectConfig | null {
     const yml = configYml || configYaml
     if (!yml?.text) return null
@@ -245,26 +314,44 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     ref: GraphQLRef
     isDefault?: boolean
     pr?: { number: number; baseRefName: string; baseRefOid: string; changedFiles: string[] }
+    configSpecs?: ProjectConfigSpecification[]
+    existingSpecPaths?: string[]
   }): Version {
-    const { owner, repoName, ref, isDefault, pr } = params
+    const { owner, repoName, ref, isDefault, pr, configSpecs, existingSpecPaths } = params
 
-    const specifications = ref.target.tree.entries
-      .filter(f => this.isOpenAPISpec(f.name))
-      .map(file => {
-        const isChanged = pr?.changedFiles.includes(file.name) ?? false
-        return {
-          id: file.name,
-          name: file.name,
-          url: `/api/blob/${owner}/${repoName}/${encodeURIComponent(file.name)}?ref=${ref.target.oid}`,
-          editURL: `https://github.com/${owner}/${repoName}/edit/${ref.name}/${encodeURIComponent(file.name)}`,
-          diffURL: isChanged ? `/api/diff/${owner}/${repoName}/${encodeURIComponent(file.name)}?baseRefOid=${pr!.baseRefOid}&to=${ref.target.oid}` : undefined,
-          diffBaseBranch: isChanged ? pr!.baseRefName : undefined,
-          diffBaseOid: isChanged ? pr!.baseRefOid : undefined,
-          diffPrUrl: isChanged ? `https://github.com/${owner}/${repoName}/pull/${pr!.number}` : undefined,
-          isDefault: false
-        }
-      })
-      .sort((a, b) => a.name.localeCompare(b.name))
+    let specifications
+    if (configSpecs && existingSpecPaths) {
+      specifications = configSpecs
+        .filter(spec => existingSpecPaths.includes(spec.path))
+        .map(spec => this.makeSpecFromPath({
+          owner,
+          repoName,
+          refName: ref.name,
+          refOid: ref.target.oid,
+          specPath: spec.path,
+          specName: spec.name,
+          pr
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    } else {
+      specifications = ref.target.tree.entries
+        .filter(f => this.isOpenAPISpec(f.name))
+        .map(file => {
+          const isChanged = pr?.changedFiles.includes(file.name) ?? false
+          return {
+            id: file.name,
+            name: file.name,
+            url: `/api/blob/${owner}/${repoName}/${encodeURIComponent(file.name)}?ref=${ref.target.oid}`,
+            editURL: `https://github.com/${owner}/${repoName}/edit/${ref.name}/${encodeURIComponent(file.name)}`,
+            diffURL: isChanged ? `/api/diff/${owner}/${repoName}/${encodeURIComponent(file.name)}?baseRefOid=${pr!.baseRefOid}&to=${ref.target.oid}` : undefined,
+            diffBaseBranch: isChanged ? pr!.baseRefName : undefined,
+            diffBaseOid: isChanged ? pr!.baseRefOid : undefined,
+            diffPrUrl: isChanged ? `https://github.com/${owner}/${repoName}/pull/${pr!.number}` : undefined,
+            isDefault: false
+          }
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+    }
 
     return {
       id: ref.name,
@@ -272,6 +359,30 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
       specifications,
       url: `https://github.com/${owner}/${repoName}/tree/${ref.name}`,
       isDefault: isDefault || false
+    }
+  }
+
+  private makeSpecFromPath(params: {
+    owner: string
+    repoName: string
+    refName: string
+    refOid: string
+    specPath: string
+    specName?: string
+    pr?: { number: number; baseRefName: string; baseRefOid: string; changedFiles: string[] }
+  }) {
+    const { owner, repoName, refName, refOid, specPath, specName, pr } = params
+    const isChanged = pr?.changedFiles.includes(specPath) ?? false
+    return {
+      id: specPath,
+      name: specName || specPath,
+      url: `/api/blob/${owner}/${repoName}/${encodeURIComponent(specPath)}?ref=${refOid}`,
+      editURL: `https://github.com/${owner}/${repoName}/edit/${refName}/${encodeURIComponent(specPath)}`,
+      diffURL: isChanged ? `/api/diff/${owner}/${repoName}/${encodeURIComponent(specPath)}?baseRefOid=${pr!.baseRefOid}&to=${refOid}` : undefined,
+      diffBaseBranch: isChanged ? pr!.baseRefName : undefined,
+      diffBaseOid: isChanged ? pr!.baseRefOid : undefined,
+      diffPrUrl: isChanged ? `https://github.com/${owner}/${repoName}/pull/${pr!.number}` : undefined,
+      isDefault: false
     }
   }
 
