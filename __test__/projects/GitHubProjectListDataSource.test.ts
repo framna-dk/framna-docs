@@ -1,6 +1,7 @@
 import { jest } from "@jest/globals"
 import { GitHubProjectListDataSource } from "@/features/projects/data"
 import { IGitHubLoginDataSource, IGitHubGraphQLClient } from "@/features/projects/domain"
+import IGitHubCodeSearchDataSource, { CodeSearchRepository } from "@/features/projects/domain/IGitHubCodeSearchDataSource"
 
 const createMockLoginsDataSource = (logins: string[] = []): IGitHubLoginDataSource => ({
   getLogins: jest.fn<() => Promise<string[]>>().mockResolvedValue(logins)
@@ -17,9 +18,17 @@ const createMockGraphQLClient = (responses: Record<string, unknown>[] = []): IGi
   }
 }
 
+const createMockCodeSearchDataSource = (
+  repos: CodeSearchRepository[] = []
+): IGitHubCodeSearchDataSource => ({
+  searchRepositoriesContainingFile: jest.fn<() => Promise<CodeSearchRepository[]>>()
+    .mockResolvedValue(repos)
+})
+
 const createSut = (overrides: {
   loginsDataSource?: IGitHubLoginDataSource
   graphQlClient?: IGitHubGraphQLClient
+  codeSearchDataSource?: IGitHubCodeSearchDataSource
   repositoryNameSuffix?: string
   projectConfigurationFilename?: string
   hiddenRepositories?: string[]
@@ -27,6 +36,7 @@ const createSut = (overrides: {
   return new GitHubProjectListDataSource({
     loginsDataSource: overrides.loginsDataSource || createMockLoginsDataSource(),
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
+    codeSearchDataSource: overrides.codeSearchDataSource,
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     hiddenRepositories: overrides.hiddenRepositories || []
@@ -369,5 +379,83 @@ describe("GitHubProjectListDataSource", () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].name).toBe("project")
+  })
+
+  describe("config-file discovery", () => {
+    test("It includes repos discovered via config file even without the suffix", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        { repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+      ])
+      const codeSearchDataSource = createMockCodeSearchDataSource([
+        { owner: "acme", name: "my-backend" }
+      ])
+      const sut = createSut({ graphQlClient, codeSearchDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result).toHaveLength(1)
+      expect(result[0].name).toBe("my-backend")
+    })
+
+    test("It deduplicates repos found by both suffix search and config-file search", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        {
+          search: {
+            results: [{ name: "service-openapi", owner: { login: "acme" } }],
+            pageInfo: { hasNextPage: false }
+          }
+        },
+        { repo_0: { name: "service-openapi", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+      ])
+      const codeSearchDataSource = createMockCodeSearchDataSource([
+        { owner: "acme", name: "service-openapi" }
+      ])
+      const sut = createSut({ graphQlClient, codeSearchDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result).toHaveLength(1)
+    })
+
+    test("It uses config name for config-file-discovered repo", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        {
+          repo_0: {
+            name: "my-backend",
+            owner: { login: "acme" },
+            configYml: { text: "name: Backend Service" },
+            configYaml: null,
+            defaultBranchRef: { target: { oid: "abc" } }
+          }
+        }
+      ])
+      const codeSearchDataSource = createMockCodeSearchDataSource([
+        { owner: "acme", name: "my-backend" }
+      ])
+      const sut = createSut({ graphQlClient, codeSearchDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result[0].displayName).toBe("Backend Service")
+    })
+
+    test("It works without a codeSearchDataSource (backward compat)", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        {
+          search: {
+            results: [{ name: "project-openapi", owner: { login: "acme" } }],
+            pageInfo: { hasNextPage: false }
+          }
+        }
+      ])
+      const sut = createSut({ graphQlClient })
+
+      const result = await sut.getProjectList()
+
+      expect(result).toHaveLength(1)
+      expect(result[0].name).toBe("project")
+    })
   })
 })
