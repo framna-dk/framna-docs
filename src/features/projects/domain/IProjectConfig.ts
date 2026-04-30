@@ -1,5 +1,10 @@
 import { z } from "zod"
 
+export const ProjectConfigSpecificationSchema = z.object({
+  path: z.string(),
+  name: z.string().optional()
+})
+
 export const ProjectConfigRemoteSpecificationSchema = z.object({
   id: z.coerce.string().optional(),
   name: z.coerce.string(),
@@ -21,9 +26,11 @@ export const IProjectConfigSchema = z.object({
   name: z.coerce.string().optional(),
   image: z.string().optional(),
   defaultSpecificationName: z.string().optional(),
+  specifications: ProjectConfigSpecificationSchema.array().optional(),
   remoteVersions: ProjectConfigRemoteVersionSchema.array().optional()
 })
 
+export type ProjectConfigSpecification = z.infer<typeof ProjectConfigSpecificationSchema>
 export type ProjectConfigRemoteSpecification = z.infer<typeof ProjectConfigRemoteSpecificationSchema>
 export type ProjectConfigRemoteVersion = z.infer<typeof ProjectConfigRemoteVersionSchema>
 export type IProjectConfig = z.infer<typeof IProjectConfigSchema>
