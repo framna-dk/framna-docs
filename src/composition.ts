@@ -18,7 +18,8 @@ import {
 import {
   GitHubLoginDataSource,
   GitHubProjectListDataSource,
-  GitHubProjectDetailsDataSource
+  GitHubProjectDetailsDataSource,
+  GitHubCodeSearchDataSource
 } from "@/features/projects/data"
 import {
   CachingProjectListDataSource,
@@ -181,11 +182,14 @@ export const encryptionService = new RsaEncryptionService({
 
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
+const gitHubCodeSearchDataSource = new GitHubCodeSearchDataSource(userGitHubClient)
+
 const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   loginsDataSource: new GitHubLoginDataSource({
     graphQlClient: userGitHubClient
   }),
   graphQlClient: userGitHubClient,
+  codeSearchDataSource: gitHubCodeSearchDataSource,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
