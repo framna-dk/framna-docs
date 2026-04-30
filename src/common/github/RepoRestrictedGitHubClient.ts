@@ -11,7 +11,8 @@ import {
     RepositoryContent,
     UpdatePullRequestCommentRequest,
     CompareCommitsRequest,
-    CompareCommitsResponse
+    CompareCommitsResponse,
+    CodeSearchResult
 } from "@/common";
 
 export class RepoRestrictedGitHubClient implements IGitHubClient {
@@ -59,6 +60,10 @@ export class RepoRestrictedGitHubClient implements IGitHubClient {
     compareCommitsWithBasehead(request: CompareCommitsRequest): Promise<CompareCommitsResponse> {
         if (!this.isRepositoryNameValid(request.repositoryName)) return Promise.reject(new Error("Invalid repository name"));
         return this.gitHubClient.compareCommitsWithBasehead(request);
+    }
+
+    searchCode(query: string): Promise<CodeSearchResult[]> {
+        return this.gitHubClient.searchCode(query);
     }
 
     private isRepositoryNameValid(repositoryName: string): boolean {

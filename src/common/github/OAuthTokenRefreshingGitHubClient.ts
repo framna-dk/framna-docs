@@ -11,7 +11,8 @@ import IGitHubClient, {
   CompareCommitsResponse,
   RepositoryContent,
   PullRequestComment,
-  PullRequestFile
+  PullRequestFile,
+  CodeSearchResult
 } from "./IGitHubClient"
 
 const HttpErrorSchema = z.object({
@@ -82,6 +83,12 @@ export default class OAuthTokenRefreshingGitHubClient implements IGitHubClient {
   async compareCommitsWithBasehead(request: CompareCommitsRequest): Promise<CompareCommitsResponse> {
     return await this.send(async () => {
       return await this.gitHubClient.compareCommitsWithBasehead(request)
+    })
+  }
+
+  async searchCode(query: string): Promise<CodeSearchResult[]> {
+    return await this.send(async () => {
+      return await this.gitHubClient.searchCode(query)
     })
   }
 
