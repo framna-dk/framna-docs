@@ -43,7 +43,7 @@
     "react-dom": "^19.2.8",
     "redis-semaphore": "^5.7.0",
     "redoc": "^2.5.2",
-    "sharp": "^0.34.2",
+    "sharp": "^0.35.0",
     "styled-components": "^6.3.12",
     "swr": "^2.4.1",
     "usehooks-ts": "^3.1.1",
