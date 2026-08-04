@@ -6,6 +6,7 @@
       "dom.iterable",
       "esnext"
     ],
+    "ignoreDeprecations": "6.0",
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -22,6 +23,7 @@
         "name": "next"
       }
     ],
+    "rootDir": ".",
     "baseUrl": ".",
     "paths": {
       "@/*": [
@@ -39,6 +41,7 @@
   ],
   "exclude": [
     "node_modules",
+    "__test__",
     "infrastructure"
   ]
 }
