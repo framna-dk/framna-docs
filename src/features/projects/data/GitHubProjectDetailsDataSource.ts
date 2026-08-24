@@ -66,6 +66,8 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     for (const repoName of candidateNames) {
       let response: Awaited<ReturnType<typeof this.fetchRepository>>
       try {
+        // Candidate names must be tried in order; the fallback only runs if the first is not found.
+        // eslint-disable-next-line no-await-in-loop
         response = await this.fetchRepository(owner, repoName)
       } catch (error) {
         if (this.isNotFoundError(error)) {
@@ -80,6 +82,7 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
       const repository = response.repository
       const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
 
+      // eslint-disable-next-line no-await-in-loop
       return await this.mapToProject({
         owner,
         name: repository.name,
