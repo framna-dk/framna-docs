@@ -483,22 +483,22 @@ describe("GitHubProjectListDataSource", () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
-            results: [{ name: "pluskort-openapi", owner: { login: "acme" } }],
+            results: [{ name: "polaris-openapi", owner: { login: "acme" } }],
             pageInfo: { hasNextPage: false }
           }
         },
         { search: { results: [], pageInfo: { hasNextPage: false } } },
-        { repo_0: { name: "pluskort", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+        { repo_0: { name: "polaris", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
       const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "pluskort", isPrivate: true }
+        { owner: "acme", name: "polaris", isPrivate: true }
       ])
       const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
 
       const result = await sut.getProjectList()
 
       expect(result).toHaveLength(1)
-      expect(result[0].url).toBe("https://github.com/acme/pluskort-openapi")
+      expect(result[0].url).toBe("https://github.com/acme/polaris-openapi")
       consoleWarn.mockRestore()
     })
 
