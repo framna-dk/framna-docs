@@ -157,6 +157,7 @@ const gitHubClient = new GitHubClient({
 
 const repoRestrictedGitHubClient = new RepoRestrictedGitHubClient({
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
+  projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   gitHubClient
 })
 

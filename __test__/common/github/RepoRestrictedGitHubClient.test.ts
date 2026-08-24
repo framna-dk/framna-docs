@@ -21,11 +21,17 @@ describe('RepoRestrictedGitHubClient', () => {
         getPullRequestComments: jest.fn(),
         addCommentToPullRequest: jest.fn(),
         updatePullRequestComment: jest.fn(),
+        compareCommitsWithBasehead: jest.fn(),
+        searchCode: jest.fn(),
     };
 
     beforeEach(() => {
+        jest.clearAllMocks();
+        // Default: repositories do not contain the project configuration file.
+        gitHubClient.getRepositoryContent.mockRejectedValue(new Error("Not Found"));
         client = new RepoRestrictedGitHubClient({
             repositoryNameSuffix,
+            projectConfigurationFilename: '.framna-docs.yml',
             gitHubClient
         });
     });
@@ -37,6 +43,7 @@ describe('RepoRestrictedGitHubClient', () => {
     });
 
     it('should delegate getRepositoryContent to the underlying client', async () => {
+        gitHubClient.getRepositoryContent.mockResolvedValue({ downloadURL: '' });
         const request: GetRepositoryContentRequest = {
             repositoryName: 'repo-suffix', path: '',
             repositoryOwner: '',
@@ -53,6 +60,52 @@ describe('RepoRestrictedGitHubClient', () => {
             ref: undefined
         };
         await expect(client.getRepositoryContent(request)).rejects.toThrow("Invalid repository name");
+    });
+
+    it('should allow repository without suffix when it contains the project configuration file', async () => {
+        gitHubClient.getRepositoryContent.mockResolvedValue({ downloadURL: '' });
+        const request: GetRepositoryContentRequest = {
+            repositoryName: 'monorepo', path: 'docs/openapi.yml',
+            repositoryOwner: 'acme',
+            ref: undefined
+        };
+        await client.getRepositoryContent(request);
+        expect(gitHubClient.getRepositoryContent).toHaveBeenCalledWith(expect.objectContaining({
+            repositoryOwner: 'acme',
+            repositoryName: 'monorepo',
+            path: '.framna-docs.yml'
+        }));
+        expect(gitHubClient.getRepositoryContent).toHaveBeenCalledWith(request);
+    });
+
+    it('should check for a .yaml configuration file when the .yml variant is missing', async () => {
+        gitHubClient.getRepositoryContent.mockImplementation(async req => {
+            if (req.path === '.framna-docs.yaml' || req.path === 'docs/openapi.yml') {
+                return { downloadURL: '' }
+            }
+            throw new Error("Not Found")
+        });
+        const request: GetRepositoryContentRequest = {
+            repositoryName: 'monorepo', path: 'docs/openapi.yml',
+            repositoryOwner: 'acme',
+            ref: undefined
+        };
+        await client.getRepositoryContent(request);
+        expect(gitHubClient.getRepositoryContent).toHaveBeenCalledWith(request);
+    });
+
+    it('should cache the configuration file check between requests', async () => {
+        gitHubClient.getRepositoryContent.mockResolvedValue({ downloadURL: '' });
+        const request: GetRepositoryContentRequest = {
+            repositoryName: 'monorepo', path: 'docs/openapi.yml',
+            repositoryOwner: 'acme',
+            ref: undefined
+        };
+        await client.getRepositoryContent(request);
+        await client.getRepositoryContent(request);
+        const configChecks = gitHubClient.getRepositoryContent.mock.calls
+            .filter(call => call[0].path === '.framna-docs.yml')
+        expect(configChecks).toHaveLength(1);
     });
 
     it('should delegate getPullRequestFiles to the underlying client', async () => {
