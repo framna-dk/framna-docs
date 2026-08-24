@@ -16,7 +16,6 @@ export default function getProjectSelectionFromPath({
   if (path.startsWith("/")) {
     path = path.substring(1)
   }
-  path = decodeURIComponent(path)
   const { owner: _owner, projectName: _projectName, versionId, specificationId } = guessSelection(path)
   // If no project is selected and the user only has a single project then we select that.
   let owner = _owner
@@ -67,7 +66,9 @@ export default function getProjectSelectionFromPath({
 }
 
 function guessSelection(pathname: string) {
-  const comps = pathname.split("/")
+  // Split before decoding: a specification ID may contain an encoded slash (%2F) when the
+  // spec file lives in a subdirectory, which must not be confused with a path separator.
+  const comps = pathname.split("/").map(decodePathComponent)
   if (comps.length == 0 || comps.length == 1) {
     return {}
   }
@@ -87,4 +88,12 @@ function guessSelection(pathname: string) {
 
 function isSpecificationIdFilename(specificationId: string): boolean {
   return specificationId.endsWith(".yml") || specificationId.endsWith(".yaml")
+}
+
+function decodePathComponent(component: string): string {
+  try {
+    return decodeURIComponent(component)
+  } catch {
+    return component
+  }
 }
