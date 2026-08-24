@@ -81,7 +81,29 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private async getRepositoriesForLogins(logins: string[]): Promise<GraphQLProjectListRepository[]> {
     const suffixRepos = await this.getRepositoriesForLoginsByNameSuffix(logins)
     const configFileRepos = await this.getRepositoriesForLoginsByConfigFile(logins)
-    return this.deduplicateRepositories([...suffixRepos, ...configFileRepos])
+    const repos = this.deduplicateRepositories([...suffixRepos, ...configFileRepos])
+    return this.resolveProjectNameCollisions(repos)
+  }
+
+  // "foo-openapi" and "foo" both map to the project name "foo". Project details resolves the
+  // suffixed repository first, so the list must do the same: keep the suffixed repo and drop
+  // the shadowed one, otherwise the list shows entries that cannot be reached.
+  private resolveProjectNameCollisions(repos: GraphQLProjectListRepository[]): GraphQLProjectListRepository[] {
+    const byProject = new Map<string, GraphQLProjectListRepository>()
+    for (const repo of repos) {
+      const projectName = repo.name.replace(new RegExp(this.repositoryNameSuffix + "$"), "")
+      const key = `${repo.owner.login}/${projectName}`
+      const existing = byProject.get(key)
+      if (!existing) {
+        byProject.set(key, repo)
+        continue
+      }
+      const winner = existing.name.endsWith(this.repositoryNameSuffix) ? existing : repo
+      const shadowed = winner === existing ? repo : existing
+      byProject.set(key, winner)
+      console.warn(`Project name collision for ${key}: ${winner.owner.login}/${winner.name} shadows ${shadowed.owner.login}/${shadowed.name}`)
+    }
+    return Array.from(byProject.values())
   }
 
   private async getRepositoriesForLoginsByNameSuffix(logins: string[]): Promise<GraphQLProjectListRepository[]> {
@@ -102,24 +124,24 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     if (!this.codeSearchDataSource) return []
 
     const configFilename = `${this.projectConfigurationFilename}.yml`
-    const queries = [
-      `filename:${configFilename} is:private`,
-      ...logins.map(login => `filename:${configFilename} user:${login} is:public`)
-    ]
+    // Code search does not support the is:private/is:public qualifiers (they silently match
+    // nothing), and per-login user: scoping cannot be trusted because org enumeration may be
+    // unavailable to the token. Search globally instead: results contain every repo the token
+    // can access plus public matches from anywhere. Keep private repos (access implies
+    // permission) and public repos owned by a known login, so foreign public repos that
+    // happen to contain the file do not leak into the portal.
+    const results = await this.codeSearchDataSource.searchRepositoriesContainingFile(`filename:${configFilename}`)
 
-    const searchResults = await Promise.all(
-      queries.map(q => this.codeSearchDataSource!.searchRepositoriesContainingFile(q))
-    )
-
-    const refs = this.deduplicateCodeSearchResults(searchResults.flat())
+    const refs = this.deduplicateCodeSearchResults(results)
+      .filter(repo => repo.isPrivate || logins.includes(repo.owner))
     if (refs.length === 0) return []
 
     return await this.fetchRepositoryDetails(refs)
   }
 
-  private deduplicateCodeSearchResults(
-    repos: Array<{ owner: string; name: string }>
-  ): Array<{ owner: string; name: string }> {
+  private deduplicateCodeSearchResults<T extends { owner: string; name: string }>(
+    repos: T[]
+  ): T[] {
     const seen = new Set<string>()
     return repos.filter(repo => {
       const key = `${repo.owner}/${repo.name}`

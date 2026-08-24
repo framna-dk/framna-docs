@@ -1,7 +1,7 @@
 import IGitHubCodeSearchDataSource, { CodeSearchRepository } from "../domain/IGitHubCodeSearchDataSource"
 
 interface ICodeSearchClient {
-  searchCode(query: string): Promise<Array<{ repository: { owner: { login: string }; name: string } }>>
+  searchCode(query: string): Promise<Array<{ repository: { owner: { login: string }; name: string; private: boolean } }>>
 }
 
 export default class GitHubCodeSearchDataSource implements IGitHubCodeSearchDataSource {
@@ -15,7 +15,8 @@ export default class GitHubCodeSearchDataSource implements IGitHubCodeSearchData
     const results = await this.client.searchCode(query)
     return results.map(item => ({
       owner: item.repository.owner.login,
-      name: item.repository.name
+      name: item.repository.name,
+      isPrivate: item.repository.private
     }))
   }
 }

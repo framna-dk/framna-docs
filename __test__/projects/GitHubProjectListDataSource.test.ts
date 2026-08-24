@@ -130,9 +130,9 @@ describe("GitHubProjectListDataSource", () => {
         search: {
           results: [
             {
-              name: "broken-project-openapi",
+              name: "legacy-project-openapi",
               owner: { login: "acme" },
-              configYml: { text: "name: Broken Project\nimage:\n  - not\n  - a-string" }
+              configYml: { text: "name: Legacy Project\nspecifications:\n  - name: v1\n    url: openapi.yml" }
             },
             {
               name: "healthy-project-openapi",
@@ -149,9 +149,9 @@ describe("GitHubProjectListDataSource", () => {
     const result = await sut.getProjectList()
 
     expect(result).toHaveLength(2)
-    const broken = result.find(p => p.name === "broken-project")
-    expect(broken?.displayName).toBe("broken-project")
-    expect(broken?.configError).toMatch(/^image: \S.*/)
+    const legacy = result.find(p => p.name === "legacy-project")
+    expect(legacy?.displayName).toBe("legacy-project")
+    expect(legacy?.configError).toMatch(/specifications\.0\.path: \S/)
     const healthy = result.find(p => p.name === "healthy-project")
     expect(healthy?.displayName).toBe("Healthy Project")
     expect(healthy?.configError).toBeUndefined()
@@ -385,17 +385,53 @@ describe("GitHubProjectListDataSource", () => {
     test("It includes repos discovered via config file even without the suffix", async () => {
       const graphQlClient = createMockGraphQLClient([
         { search: { results: [], pageInfo: { hasNextPage: false } } },
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
         { repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
       const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "my-backend" }
+        { owner: "acme", name: "my-backend", isPrivate: true }
       ])
-      const sut = createSut({ graphQlClient, codeSearchDataSource })
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
 
       const result = await sut.getProjectList()
 
       expect(result).toHaveLength(1)
       expect(result[0].name).toBe("my-backend")
+    })
+
+    test("It searches globally without is: or user: qualifiers", async () => {
+      // GitHub code search does not support is:private/is:public (they silently match nothing),
+      // and user: scoping cannot be trusted because org enumeration may be unavailable to the token.
+      const codeSearchDataSource = createMockCodeSearchDataSource([])
+      const loginsDataSource = createMockLoginsDataSource(["jdoe", "acme"])
+      const sut = createSut({ loginsDataSource, codeSearchDataSource })
+
+      await sut.getProjectList()
+
+      const queries = (codeSearchDataSource.searchRepositoriesContainingFile as jest.Mock).mock.calls.map(call => call[0])
+      expect(queries).toEqual(["filename:.framna-docs.yml"])
+    })
+
+    test("It keeps private repos and public repos owned by a login, and drops foreign public repos", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        {
+          repo_0: { name: "private-elsewhere", owner: { login: "other-org" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "a" } } },
+          repo_1: { name: "public-own", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "b" } } }
+        }
+      ])
+      const codeSearchDataSource = createMockCodeSearchDataSource([
+        { owner: "other-org", name: "private-elsewhere", isPrivate: true },
+        { owner: "acme", name: "public-own", isPrivate: false },
+        { owner: "stranger", name: "public-foreign", isPrivate: false }
+      ])
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+
+      const result = await sut.getProjectList()
+
+      const names = result.map(p => p.name).sort()
+      expect(names).toEqual(["private-elsewhere", "public-own"])
     })
 
     test("It deduplicates repos found by both suffix search and config-file search", async () => {
@@ -409,7 +445,7 @@ describe("GitHubProjectListDataSource", () => {
         { repo_0: { name: "service-openapi", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
       const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "service-openapi" }
+        { owner: "acme", name: "service-openapi", isPrivate: true }
       ])
       const sut = createSut({ graphQlClient, codeSearchDataSource })
 
@@ -420,6 +456,7 @@ describe("GitHubProjectListDataSource", () => {
 
     test("It uses config name for config-file-discovered repo", async () => {
       const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
         { search: { results: [], pageInfo: { hasNextPage: false } } },
         {
           repo_0: {
@@ -432,13 +469,37 @@ describe("GitHubProjectListDataSource", () => {
         }
       ])
       const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "my-backend" }
+        { owner: "acme", name: "my-backend", isPrivate: true }
       ])
-      const sut = createSut({ graphQlClient, codeSearchDataSource })
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
 
       const result = await sut.getProjectList()
 
       expect(result[0].displayName).toBe("Backend Service")
+    })
+
+    test("It drops a config-file repo shadowed by a suffixed repo with the same project name", async () => {
+      const consoleWarn = jest.spyOn(console, "warn").mockImplementation(() => {})
+      const graphQlClient = createMockGraphQLClient([
+        {
+          search: {
+            results: [{ name: "pluskort-openapi", owner: { login: "acme" } }],
+            pageInfo: { hasNextPage: false }
+          }
+        },
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        { repo_0: { name: "pluskort", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+      ])
+      const codeSearchDataSource = createMockCodeSearchDataSource([
+        { owner: "acme", name: "pluskort", isPrivate: true }
+      ])
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result).toHaveLength(1)
+      expect(result[0].url).toBe("https://github.com/acme/pluskort-openapi")
+      consoleWarn.mockRestore()
     })
 
     test("It works without a codeSearchDataSource (backward compat)", async () => {

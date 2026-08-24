@@ -85,6 +85,7 @@ export type CodeSearchResult = {
   readonly repository: {
     readonly owner: { readonly login: string }
     readonly name: string
+    readonly private: boolean
   }
 }
 
