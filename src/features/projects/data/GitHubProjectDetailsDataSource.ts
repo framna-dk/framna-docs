@@ -230,7 +230,13 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
   private parseConfig(configYml?: { text: string }, configYaml?: { text: string }): IProjectConfig | null {
     const yml = configYml || configYaml
     if (!yml?.text) return null
-    return new ProjectConfigParser().parse(yml.text)
+    try {
+      return new ProjectConfigParser().parse(yml.text)
+    } catch (error) {
+      // A broken config should degrade to default behavior, not fail the project page.
+      console.error("Ignoring invalid project config:", error)
+      return null
+    }
   }
 
   private mapVersion(params: {

@@ -1,3 +1,4 @@
+import { ZodError } from "zod"
 import { splitOwnerAndRepository } from "@/common"
 import {
   ProjectSummary,
@@ -6,6 +7,16 @@ import {
   IGitHubGraphQLClient,
   ProjectConfigParser
 } from "../domain"
+import IProjectConfig from "../domain/IProjectConfig"
+
+function formatConfigError(error: unknown): string {
+  if (error instanceof ZodError) {
+    return error.issues
+      .map(issue => issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message)
+      .join("; ")
+  }
+  return error instanceof Error ? error.message : String(error)
+}
 
 type GraphQLProjectListRepository = {
   readonly name: string
@@ -138,7 +149,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   }
 
   private mapToSummary(repo: GraphQLProjectListRepository): ProjectSummary {
-    const config = this.parseConfig(repo)
+    const { config, configError } = this.parseConfig(repo)
     const defaultName = repo.name.replace(new RegExp(this.repositoryNameSuffix + "$"), "")
 
     return {
@@ -148,15 +159,23 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
       owner: repo.owner.login,
       imageURL: config?.image ? this.makeImageURL(repo.owner.login, repo.name, config.image, repo.defaultBranchRef?.target.oid) : undefined,
       url: `https://github.com/${repo.owner.login}/${repo.name}`,
-      ownerUrl: `https://github.com/${repo.owner.login}`
+      ownerUrl: `https://github.com/${repo.owner.login}`,
+      configError
     }
   }
 
-  private parseConfig(repo: GraphQLProjectListRepository) {
+  private parseConfig(repo: GraphQLProjectListRepository): { config: IProjectConfig | null, configError?: string } {
     const yml = repo.configYml || repo.configYaml
-    if (!yml?.text) return null
+    if (!yml?.text) return { config: null }
     const parser = new ProjectConfigParser()
-    return parser.parse(yml.text)
+    try {
+      return { config: parser.parse(yml.text) }
+    } catch (error) {
+      // A broken config in one repository must not take down the whole project list.
+      // Surface the error on the project instead.
+      console.error(`Invalid project config in ${repo.owner.login}/${repo.name}:`, error)
+      return { config: null, configError: formatConfigError(error) }
+    }
   }
 
   private makeImageURL(owner: string, repo: string, imagePath: string, oid?: string): string {

@@ -7,8 +7,11 @@ import {
   ListItemButton,
   Skeleton as MuiSkeleton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faTriangleExclamation } from "@fortawesome/free-solid-svg-icons";
 import MenuItemHover from "@/common/ui/MenuItemHover";
 import { ProjectSummary } from "@/features/projects/domain";
 import { useProjectSelection } from "@/features/projects/data";
@@ -39,7 +42,15 @@ const ProjectListItem = ({ project }: { project: ProjectSummary }) => {
         />
       }
       title={project.displayName}
-    />
+    >
+      {project.configError && (
+        <Tooltip title={`Invalid project configuration: ${project.configError}`}>
+          <Typography component="span" sx={{ color: "warning.main", display: "flex" }}>
+            <FontAwesomeIcon icon={faTriangleExclamation} size="sm" />
+          </Typography>
+        </Tooltip>
+      )}
+    </Template>
   );
 };
 
