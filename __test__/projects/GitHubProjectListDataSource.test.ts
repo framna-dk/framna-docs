@@ -141,7 +141,7 @@ describe("GitHubProjectListDataSource", () => {
     expect(result).toHaveLength(2)
     const broken = result.find(p => p.name === "broken-project")
     expect(broken?.displayName).toBe("broken-project")
-    expect(broken?.configError).toContain("image")
+    expect(broken?.configError).toMatch(/^image: \S.*/)
     const healthy = result.find(p => p.name === "healthy-project")
     expect(healthy?.displayName).toBe("Healthy Project")
     expect(healthy?.configError).toBeUndefined()

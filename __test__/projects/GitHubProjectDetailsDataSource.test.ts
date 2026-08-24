@@ -108,6 +108,24 @@ describe("GitHubProjectDetailsDataSource", () => {
       expect(result!.url).toBe("https://github.com/acme/my-project-openapi")
     })
 
+    test("It degrades to default behavior when the config is malformed", async () => {
+      const consoleError = jest.spyOn(console, "error").mockImplementation(() => {})
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
+        configYml: { text: "name: Broken Project\nimage:\n  - not\n  - a-string" }
+      }))
+      const sut = createSut({ graphQlClient })
+
+      const result = await sut.getProjectDetails("acme", "my-project")
+
+      expect(result).not.toBeNull()
+      expect(result!.displayName).toBe("my-project")
+      expect(result!.imageURL).toBeUndefined()
+      expect(result!.versions).toHaveLength(1)
+      expect(result!.versions[0].specifications.map(s => s.name)).toEqual(["api.yml"])
+      expect(consoleError).toHaveBeenCalled()
+      consoleError.mockRestore()
+    })
+
     test("It uses display name from config", async () => {
       const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
         configYml: { text: "name: My Awesome API" }
