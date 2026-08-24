@@ -25,10 +25,12 @@ describe('RepoRestrictedGitHubClient', () => {
         searchCode: jest.fn(),
     };
 
+    const notFoundError = () => Object.assign(new Error("Not Found"), { status: 404 });
+
     beforeEach(() => {
         jest.clearAllMocks();
         // Default: repositories do not contain the project configuration file.
-        gitHubClient.getRepositoryContent.mockRejectedValue(new Error("Not Found"));
+        gitHubClient.getRepositoryContent.mockRejectedValue(notFoundError());
         client = new RepoRestrictedGitHubClient({
             repositoryNameSuffix,
             projectConfigurationFilename: '.framna-docs.yml',
@@ -83,7 +85,7 @@ describe('RepoRestrictedGitHubClient', () => {
             if (req.path === '.framna-docs.yaml' || req.path === 'docs/openapi.yml') {
                 return { downloadURL: '' }
             }
-            throw new Error("Not Found")
+            throw Object.assign(new Error("Not Found"), { status: 404 })
         });
         const request: GetRepositoryContentRequest = {
             repositoryName: 'monorepo', path: 'docs/openapi.yml',
@@ -94,7 +96,10 @@ describe('RepoRestrictedGitHubClient', () => {
         expect(gitHubClient.getRepositoryContent).toHaveBeenCalledWith(request);
     });
 
-    it('should cache the configuration file check between requests', async () => {
+    it('should check the configuration file on every request with the requesting user\'s token', async () => {
+        // The client instance is shared across users while probes run with the requesting
+        // user's token, so results are never cached: one user's observation must not answer
+        // for another.
         gitHubClient.getRepositoryContent.mockResolvedValue({ downloadURL: '' });
         const request: GetRepositoryContentRequest = {
             repositoryName: 'monorepo', path: 'docs/openapi.yml',
@@ -105,7 +110,19 @@ describe('RepoRestrictedGitHubClient', () => {
         await client.getRepositoryContent(request);
         const configChecks = gitHubClient.getRepositoryContent.mock.calls
             .filter(call => call[0].path === '.framna-docs.yml')
-        expect(configChecks).toHaveLength(1);
+        expect(configChecks).toHaveLength(2);
+    });
+
+    it('should surface non-404 errors from the configuration file check instead of denying', async () => {
+        gitHubClient.getRepositoryContent.mockRejectedValue(
+            Object.assign(new Error("API rate limit exceeded"), { status: 403 })
+        );
+        const request: GetRepositoryContentRequest = {
+            repositoryName: 'monorepo', path: 'docs/openapi.yml',
+            repositoryOwner: 'acme',
+            ref: undefined
+        };
+        await expect(client.getRepositoryContent(request)).rejects.toThrow("API rate limit exceeded");
     });
 
     it('should delegate getPullRequestFiles to the underlying client', async () => {

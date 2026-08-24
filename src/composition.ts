@@ -155,16 +155,16 @@ const gitHubClient = new GitHubClient({
   oauthTokenDataSource
 })
 
-const repoRestrictedGitHubClient = new RepoRestrictedGitHubClient({
+// The repo restriction wraps the token-refreshing client so the restriction's own
+// configuration-file probes benefit from token refresh instead of failing on expired tokens.
+export const userGitHubClient = new RepoRestrictedGitHubClient({
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
-  gitHubClient
-})
-
-export const userGitHubClient = new OAuthTokenRefreshingGitHubClient({
-  gitHubClient: repoRestrictedGitHubClient,
-  oauthTokenDataSource,
-  oauthTokenRefresher
+  gitHubClient: new OAuthTokenRefreshingGitHubClient({
+    gitHubClient,
+    oauthTokenDataSource,
+    oauthTokenRefresher
+  })
 })
 
 export const blockingSessionValidator = new OAuthTokenSessionValidator({

@@ -203,9 +203,12 @@ describe("GitHubProjectDetailsDataSource", () => {
       )
     })
 
-    test("It fetches a repo by exact name when the repo has no suffix", async () => {
+    test("It fetches a repo by exact name when the repo has no suffix and contains a config file", async () => {
       const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
-      const successResponse = createRepositoryResponse({ name: "my-backend" })
+      const successResponse = createRepositoryResponse({
+        name: "my-backend",
+        configYml: { text: "name: My Backend" }
+      })
 
       const graphQlClient: IGitHubGraphQLClient = {
         graphql: jest.fn<() => Promise<unknown>>()
@@ -221,6 +224,24 @@ describe("GitHubProjectDetailsDataSource", () => {
       expect((graphQlClient.graphql as jest.Mock).mock.calls[1][0]).toMatchObject({
         variables: { owner: "acme", name: "my-backend" }
       })
+    })
+
+    test("It returns null for a bare-name repo without a config file", async () => {
+      // Without the configuration file the repo has not opted in, and the content-serving
+      // guard would reject its blobs anyway. Details must mirror that rule.
+      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
+      const successResponse = createRepositoryResponse({ name: "my-backend" })
+
+      const graphQlClient: IGitHubGraphQLClient = {
+        graphql: jest.fn<() => Promise<unknown>>()
+          .mockRejectedValueOnce(notFoundError)
+          .mockResolvedValueOnce(successResponse)
+      }
+      const sut = createSut({ graphQlClient })
+
+      const result = await sut.getProjectDetails("acme", "my-backend")
+
+      expect(result).toBeNull()
     })
   })
 

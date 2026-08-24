@@ -1,5 +1,4 @@
-import {
-    IGitHubClient,
+import IGitHubClient, {
     AddCommentToPullRequestRequest,
     GetPullRequestCommentsRequest,
     GetPullRequestFilesRequest,
@@ -13,16 +12,16 @@ import {
     CompareCommitsRequest,
     CompareCommitsResponse,
     CodeSearchResult
-} from "@/common";
+} from "./IGitHubClient";
+import ProjectRepositoryNaming from "../utils/ProjectRepositoryNaming";
 
-const CONFIG_FILE_CHECK_TTL_MS = 5 * 60 * 1000
-
+// Deliberately stateless: this instance is shared across users while every call runs with
+// the requesting user's token, so nothing observed on behalf of one user may be kept around
+// to answer for another.
 export class RepoRestrictedGitHubClient implements IGitHubClient {
 
     private gitHubClient: IGitHubClient;
-    private repositoryNameSuffix: string;
-    private projectConfigurationFilename: string;
-    private configFileChecks = new Map<string, { allowed: boolean; expiresAt: number }>();
+    private naming: ProjectRepositoryNaming;
 
     constructor(config: {
         repositoryNameSuffix: string;
@@ -30,8 +29,7 @@ export class RepoRestrictedGitHubClient implements IGitHubClient {
         gitHubClient: IGitHubClient
     }) {
         this.gitHubClient = config.gitHubClient;
-        this.repositoryNameSuffix = config.repositoryNameSuffix;
-        this.projectConfigurationFilename = config.projectConfigurationFilename.replace(/\.ya?ml$/, "");
+        this.naming = new ProjectRepositoryNaming(config);
     }
 
     graphql(request: GraphQLQueryRequest): Promise<GraphQlQueryResponse> {
@@ -76,34 +74,42 @@ export class RepoRestrictedGitHubClient implements IGitHubClient {
     // suffix, or it contains the project configuration file. This mirrors project discovery
     // and keeps the portal from proxying content of arbitrary repositories.
     private async ensureRepositoryAllowed(owner: string, name: string): Promise<void> {
-        if (name.endsWith(this.repositoryNameSuffix)) return;
+        if (this.naming.hasSuffix(name)) return;
         if (await this.containsProjectConfigurationFile(owner, name)) return;
         throw new Error("Invalid repository name");
     }
 
     private async containsProjectConfigurationFile(owner: string, name: string): Promise<boolean> {
-        const key = `${owner}/${name}`;
-        const cached = this.configFileChecks.get(key);
-        if (cached && cached.expiresAt > Date.now()) {
-            return cached.allowed;
+        for (const filename of this.naming.configFileVariants) {
+            // Variants are probed sequentially so the common .yml case skips the .yaml request.
+            // eslint-disable-next-line no-await-in-loop
+            if (await this.configurationFileExists(owner, name, filename)) {
+                return true;
+            }
         }
-        const allowed = await this.configurationFileExists(owner, name, ".yml")
-            || await this.configurationFileExists(owner, name, ".yaml");
-        this.configFileChecks.set(key, { allowed, expiresAt: Date.now() + CONFIG_FILE_CHECK_TTL_MS });
-        return allowed;
+        return false;
     }
 
-    private async configurationFileExists(owner: string, name: string, extension: string): Promise<boolean> {
+    private async configurationFileExists(owner: string, name: string, path: string): Promise<boolean> {
         try {
             await this.gitHubClient.getRepositoryContent({
                 repositoryOwner: owner,
                 repositoryName: name,
-                path: `${this.projectConfigurationFilename}${extension}`,
+                path,
                 ref: undefined
             });
             return true;
-        } catch {
-            return false;
+        } catch (error) {
+            if (isNotFoundError(error)) {
+                return false;
+            }
+            // Rate limits, auth failures and the like must surface as what they are,
+            // not read as "this repository did not opt in".
+            throw error;
         }
     }
+}
+
+function isNotFoundError(error: unknown): boolean {
+    return typeof error === "object" && error !== null && (error as { status?: number }).status === 404;
 }

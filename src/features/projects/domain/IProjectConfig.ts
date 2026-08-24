@@ -1,7 +1,9 @@
 import { z } from "zod"
 
 export const ProjectConfigSpecificationSchema = z.object({
-  path: z.string(),
+  // The path is embedded in GraphQL queries; quotes and backslashes are rejected at this
+  // boundary so downstream query building never sees them.
+  path: z.string().regex(/^[^"\\]+$/, "must not contain quotes or backslashes"),
   name: z.string().optional()
 })
 

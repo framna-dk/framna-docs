@@ -36,7 +36,7 @@ const createSut = (overrides: {
   return new GitHubProjectListDataSource({
     loginsDataSource: overrides.loginsDataSource || createMockLoginsDataSource(),
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
-    codeSearchDataSource: overrides.codeSearchDataSource,
+    codeSearchDataSource: overrides.codeSearchDataSource || createMockCodeSearchDataSource(),
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     hiddenRepositories: overrides.hiddenRepositories || []
@@ -399,17 +399,15 @@ describe("GitHubProjectListDataSource", () => {
       expect(result[0].name).toBe("my-backend")
     })
 
-    test("It searches globally without is: or user: qualifiers", async () => {
-      // GitHub code search does not support is:private/is:public (they silently match nothing),
-      // and user: scoping cannot be trusted because org enumeration may be unavailable to the token.
+    test("It searches for both config file variants", async () => {
       const codeSearchDataSource = createMockCodeSearchDataSource([])
       const loginsDataSource = createMockLoginsDataSource(["jdoe", "acme"])
       const sut = createSut({ loginsDataSource, codeSearchDataSource })
 
       await sut.getProjectList()
 
-      const queries = (codeSearchDataSource.searchRepositoriesContainingFile as jest.Mock).mock.calls.map(call => call[0])
-      expect(queries).toEqual(["filename:.framna-docs.yml"])
+      const filenames = (codeSearchDataSource.searchRepositoriesContainingFile as jest.Mock).mock.calls.map(call => call[0])
+      expect(filenames.sort()).toEqual([".framna-docs.yaml", ".framna-docs.yml"])
     })
 
     test("It keeps private repos and public repos owned by a login, and drops foreign public repos", async () => {
@@ -502,7 +500,7 @@ describe("GitHubProjectListDataSource", () => {
       consoleWarn.mockRestore()
     })
 
-    test("It works without a codeSearchDataSource (backward compat)", async () => {
+    test("It returns suffix-discovered repos when code search finds nothing", async () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
@@ -511,7 +509,7 @@ describe("GitHubProjectListDataSource", () => {
           }
         }
       ])
-      const sut = createSut({ graphQlClient })
+      const sut = createSut({ graphQlClient, codeSearchDataSource: createMockCodeSearchDataSource([]) })
 
       const result = await sut.getProjectList()
 

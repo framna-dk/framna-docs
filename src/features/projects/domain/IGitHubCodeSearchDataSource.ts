@@ -5,5 +5,5 @@ export type CodeSearchRepository = {
 }
 
 export default interface IGitHubCodeSearchDataSource {
-  searchRepositoriesContainingFile(query: string): Promise<CodeSearchRepository[]>
+  searchRepositoriesContainingFile(filename: string): Promise<CodeSearchRepository[]>
 }
