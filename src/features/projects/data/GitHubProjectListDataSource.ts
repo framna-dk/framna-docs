@@ -57,7 +57,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     return repositories
       .filter(repo => !this.isHidden(repo))
       .map(repo => this.mapToSummary(repo))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName))
   }
 
   private isHidden(repo: GraphQLProjectListRepository): boolean {
