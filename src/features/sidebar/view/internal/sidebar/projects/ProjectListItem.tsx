@@ -7,8 +7,11 @@ import {
   ListItemButton,
   Skeleton as MuiSkeleton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faTriangleExclamation } from "@fortawesome/free-solid-svg-icons";
 import MenuItemHover from "@/common/ui/MenuItemHover";
 import { ProjectSummary } from "@/features/projects/domain";
 import { useProjectSelection } from "@/features/projects/data";
@@ -39,7 +42,18 @@ const ProjectListItem = ({ project }: { project: ProjectSummary }) => {
         />
       }
       title={project.displayName}
-    />
+      tooltip={
+        project.configError
+          ? `Invalid project configuration: ${project.configError}`
+          : undefined
+      }
+    >
+      {project.configError && (
+        <Typography component="span" aria-hidden sx={{ color: "warning.main", display: "flex" }}>
+          <FontAwesomeIcon icon={faTriangleExclamation} size="sm" />
+        </Typography>
+      )}
+    </Template>
   );
 };
 
@@ -73,6 +87,7 @@ export const Template = ({
   onSelect,
   avatar,
   title,
+  tooltip,
   children,
 }: {
   disabled?: boolean;
@@ -80,11 +95,12 @@ export const Template = ({
   onSelect?: () => void;
   avatar: React.ReactNode;
   title?: string;
+  tooltip?: string;
   children?: React.ReactNode;
 }) => {
   return (
     <ListItem disablePadding>
-      <Button disabled={disabled} selected={selected} onSelect={onSelect}>
+      <Button disabled={disabled} selected={selected} onSelect={onSelect} tooltip={tooltip}>
         <MenuItemHover disabled={disabled}>
           <Stack direction="row" alignItems="center" spacing={1.5}>
             <Box sx={{ width: 40, height: 40 }}>{avatar}</Box>
@@ -118,27 +134,34 @@ const Button = ({
   disabled,
   selected,
   onSelect,
+  tooltip,
   children,
 }: {
   disabled?: boolean;
   selected?: boolean;
   onSelect?: () => void;
+  tooltip?: string;
   children?: React.ReactNode;
 }) => {
+  if (disabled) {
+    return <>{children}</>;
+  }
+  const button = (
+    <ListItemButton
+      onClick={onSelect}
+      selected={selected}
+      disableGutters
+      sx={{ padding: 0 }}
+    >
+      {children}
+    </ListItemButton>
+  );
+  if (!tooltip) {
+    return button;
+  }
   return (
-    <>
-      {disabled && children}
-      {!disabled && (
-        <ListItemButton
-          disabled={disabled}
-          onClick={onSelect}
-          selected={selected}
-          disableGutters
-          sx={{ padding: 0 }}
-        >
-          {children}
-        </ListItemButton>
-      )}
-    </>
+    <Tooltip title={tooltip} describeChild>
+      {button}
+    </Tooltip>
   );
 };

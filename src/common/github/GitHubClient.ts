@@ -12,7 +12,8 @@ import IGitHubClient, {
   CompareCommitsResponse,
   RepositoryContent,
   PullRequestComment,
-  PullRequestFile
+  PullRequestFile,
+  CodeSearchResult
 } from "./IGitHubClient"
 
 const GITHUB_API_VERSION = { "X-GitHub-Api-Version": "2026-03-10" } as const
@@ -139,5 +140,15 @@ export default class GitHubClient implements IGitHubClient {
       headers: GITHUB_API_VERSION
     })
     return { mergeBaseSha: response.data.merge_base_commit.sha }
+  }
+
+  async searchCode(query: string): Promise<CodeSearchResult[]> {
+    const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
+    const octokit = new Octokit({ auth: oauthToken.accessToken })
+    return await octokit.paginate(octokit.rest.search.code, {
+      q: query,
+      per_page: 100,
+      headers: GITHUB_API_VERSION
+    }) as CodeSearchResult[]
   }
 }

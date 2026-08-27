@@ -7,7 +7,8 @@ export const ProjectSummarySchema = z.object({
   owner: z.string(),
   imageURL: z.string().optional(),
   url: z.string().optional(),
-  ownerUrl: z.string()
+  ownerUrl: z.string(),
+  configError: z.string().optional()
 })
 
 type ProjectSummary = z.infer<typeof ProjectSummarySchema>

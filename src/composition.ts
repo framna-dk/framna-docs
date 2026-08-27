@@ -18,7 +18,8 @@ import {
 import {
   GitHubLoginDataSource,
   GitHubProjectListDataSource,
-  GitHubProjectDetailsDataSource
+  GitHubProjectDetailsDataSource,
+  GitHubCodeSearchDataSource
 } from "@/features/projects/data"
 import {
   CachingProjectListDataSource,
@@ -154,15 +155,16 @@ const gitHubClient = new GitHubClient({
   oauthTokenDataSource
 })
 
-const repoRestrictedGitHubClient = new RepoRestrictedGitHubClient({
+// The repo restriction wraps the token-refreshing client so the restriction's own
+// configuration-file probes benefit from token refresh instead of failing on expired tokens.
+export const userGitHubClient = new RepoRestrictedGitHubClient({
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
-  gitHubClient
-})
-
-export const userGitHubClient = new OAuthTokenRefreshingGitHubClient({
-  gitHubClient: repoRestrictedGitHubClient,
-  oauthTokenDataSource,
-  oauthTokenRefresher
+  projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
+  gitHubClient: new OAuthTokenRefreshingGitHubClient({
+    gitHubClient,
+    oauthTokenDataSource,
+    oauthTokenRefresher
+  })
 })
 
 export const blockingSessionValidator = new OAuthTokenSessionValidator({
@@ -181,11 +183,14 @@ export const encryptionService = new RsaEncryptionService({
 
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
+const gitHubCodeSearchDataSource = new GitHubCodeSearchDataSource(userGitHubClient)
+
 const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   loginsDataSource: new GitHubLoginDataSource({
     graphQlClient: userGitHubClient
   }),
   graphQlClient: userGitHubClient,
+  codeSearchDataSource: gitHubCodeSearchDataSource,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
