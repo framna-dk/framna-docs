@@ -269,6 +269,34 @@ describe("GitHubProjectListDataSource", () => {
     expect(result.map(p => p.name)).toEqual(["alpha", "middle", "zebra"])
   })
 
+  test("It sorts projects by config name when available, falling back to repository name", async () => {
+    const graphQlClient = createMockGraphQLClient([
+      {
+        search: {
+          results: [
+            {
+              name: "zebra-openapi",
+              owner: { login: "acme" },
+              configYml: { text: "name: Banana" }
+            },
+            { name: "middle-openapi", owner: { login: "acme" } },
+            {
+              name: "alpha-openapi",
+              owner: { login: "acme" },
+              configYml: { text: "name: Zulu" }
+            }
+          ],
+          pageInfo: { hasNextPage: false }
+        }
+      }
+    ])
+    const sut = createSut({ graphQlClient })
+
+    const result = await sut.getProjectList()
+
+    expect(result.map(p => p.displayName)).toEqual(["Banana", "middle", "Zulu"])
+  })
+
   test("It handles pagination", async () => {
     const graphQlClient = createMockGraphQLClient([
       {
