@@ -13,7 +13,7 @@ import IGitHubClient, {
   RepositoryContent,
   PullRequestComment,
   PullRequestFile,
-  CodeSearchResult
+  AccessibleRepository
 } from "./IGitHubClient"
 
 const GITHUB_API_VERSION = { "X-GitHub-Api-Version": "2026-03-10" } as const
@@ -142,13 +142,36 @@ export default class GitHubClient implements IGitHubClient {
     return { mergeBaseSha: response.data.merge_base_commit.sha }
   }
 
-  async searchCode(query: string): Promise<CodeSearchResult[]> {
+  async listRepositoriesForAuthenticatedUser(): Promise<AccessibleRepository[]> {
     const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
     const octokit = new Octokit({ auth: oauthToken.accessToken })
-    return await octokit.paginate(octokit.rest.search.code, {
-      q: query,
+    const firstPage = await octokit.rest.repos.listForAuthenticatedUser({
       per_page: 100,
       headers: GITHUB_API_VERSION
-    }) as CodeSearchResult[]
+    })
+    // The Link header names the last page, so the remaining pages can be fetched in
+    // parallel instead of walking the cursor sequentially.
+    const pageCount = lastPageNumber(firstPage.headers.link)
+    const remainingPages = await Promise.all(
+      Array.from({ length: pageCount - 1 }, (_, index) => {
+        return octokit.rest.repos.listForAuthenticatedUser({
+          per_page: 100,
+          page: index + 2,
+          headers: GITHUB_API_VERSION
+        })
+      })
+    )
+    return [firstPage, ...remainingPages].flatMap(page => {
+      return page.data.map(repo => ({
+        owner: repo.owner.login,
+        name: repo.name,
+        pushedAt: repo.pushed_at ?? null
+      }))
+    })
   }
+}
+
+function lastPageNumber(linkHeader: string | undefined): number {
+  const match = linkHeader?.match(/[?&]page=(\d+)[^>]*>;\s*rel="last"/)
+  return match ? parseInt(match[1], 10) : 1
 }

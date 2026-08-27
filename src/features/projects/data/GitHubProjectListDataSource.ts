@@ -7,7 +7,30 @@ import {
   ProjectConfigParser
 } from "../domain"
 import IProjectConfig from "../domain/IProjectConfig"
-import IGitHubCodeSearchDataSource from "../domain/IGitHubCodeSearchDataSource"
+import IGitHubAccessibleRepositoriesDataSource, { AccessibleRepositoryRef } from "../domain/IGitHubAccessibleRepositoriesDataSource"
+import IConfigFileScanRepository, { ConfigFileScan } from "../domain/IConfigFileScanRepository"
+
+// GitHub cancels GraphQL queries that run close to its ~10 second execution timeout with
+// a 502, and resolving a config-file expression per repository is expensive, so keep each
+// query small enough to finish well within it.
+const MAX_REPOSITORY_DETAILS_ALIASES_PER_QUERY = 50
+
+// GitHub's secondary rate limits punish concurrent heavy GraphQL queries from the same
+// token, so chunks are fetched with limited parallelism instead of all at once.
+const MAX_CONCURRENT_REPOSITORY_DETAILS_QUERIES = 2
+
+// A scan this recent is reused as-is, so bursts of refreshes (page load plus window
+// focus) do not repeatedly re-enumerate the user's repositories.
+const CONFIG_FILE_SCAN_REUSE_MS = 60 * 1000
+
+// Repositories pushed within this margin before the previous scan are probed again, so
+// clock skew between GitHub's pushed-at timestamps and this server cannot skip a change.
+const CONFIG_FILE_SCAN_PUSH_OVERLAP_MS = 10 * 60 * 1000
+
+// GitHub answers a secondary rate limit on GraphQL with HTTP 200 and a body carrying
+// neither data nor errors, which slips past Octokit's throttling plugin and surfaces as
+// an empty response. GitHub asks clients to wait at least a minute before retrying.
+const EMPTY_RESPONSE_RETRY_DELAYS_MS = [60 * 1000, 60 * 1000]
 
 type GraphQLProjectListRepository = {
   readonly name: string
@@ -18,33 +41,39 @@ type GraphQLProjectListRepository = {
     readonly target: {
       readonly oid: string
     }
-  }
+  } | null
   readonly configYml?: {
-    readonly text: string
-  }
+    readonly text?: string
+  } | null
   readonly configYaml?: {
-    readonly text: string
-  }
+    readonly text?: string
+  } | null
 }
 
 export default class GitHubProjectListDataSource implements IProjectListDataSource {
   private readonly loginsDataSource: IGitHubLoginDataSource
   private readonly graphQlClient: IGitHubGraphQLClient
-  private readonly codeSearchDataSource: IGitHubCodeSearchDataSource
+  private readonly accessibleRepositoriesDataSource: IGitHubAccessibleRepositoriesDataSource
+  private readonly configFileScanRepository: IConfigFileScanRepository
   private readonly naming: ProjectRepositoryNaming
   private readonly hiddenRepositories: { owner: string; repository: string }[]
+  private readonly emptyResponseRetryDelaysMs: number[]
 
   constructor(config: {
     loginsDataSource: IGitHubLoginDataSource
     graphQlClient: IGitHubGraphQLClient
-    codeSearchDataSource: IGitHubCodeSearchDataSource
+    accessibleRepositoriesDataSource: IGitHubAccessibleRepositoriesDataSource
+    configFileScanRepository: IConfigFileScanRepository
     repositoryNameSuffix: string
     projectConfigurationFilename: string
     hiddenRepositories: string[]
+    emptyResponseRetryDelaysMs?: number[]
   }) {
     this.loginsDataSource = config.loginsDataSource
     this.graphQlClient = config.graphQlClient
-    this.codeSearchDataSource = config.codeSearchDataSource
+    this.accessibleRepositoriesDataSource = config.accessibleRepositoriesDataSource
+    this.configFileScanRepository = config.configFileScanRepository
+    this.emptyResponseRetryDelaysMs = config.emptyResponseRetryDelaysMs ?? EMPTY_RESPONSE_RETRY_DELAYS_MS
     this.naming = new ProjectRepositoryNaming(config)
     this.hiddenRepositories = config.hiddenRepositories
       .map(splitOwnerAndRepository)
@@ -69,7 +98,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private async getRepositoriesForLogins(logins: string[]): Promise<GraphQLProjectListRepository[]> {
     const [suffixRepos, configFileRepos] = await Promise.all([
       this.getRepositoriesForLoginsByNameSuffix(logins),
-      this.getRepositoriesForLoginsByConfigFile(logins)
+      this.getRepositoriesByConfigFile()
     ])
     const repos = dedupeBy(
       [...suffixRepos, ...configFileRepos],
@@ -112,24 +141,83 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
       .filter(repo => this.naming.hasSuffix(repo.name))
   }
 
-  private async getRepositoriesForLoginsByConfigFile(logins: string[]): Promise<GraphQLProjectListRepository[]> {
-    const results = await Promise.all(
-      this.naming.configFileVariants.map(filename =>
-        this.codeSearchDataSource.searchRepositoriesContainingFile(filename)
+  // Enumerates every repository the user's token can access and probes for the
+  // configuration file at HEAD. Reading HEAD directly picks up a freshly pushed file on
+  // the next refresh, unlike GitHub's code search whose index lags pushes by hours or
+  // days. Enumeration is inherently scoped to accessible repositories, so no visibility
+  // filtering is needed: foreign public repositories are never enumerated.
+  private async getRepositoriesByConfigFile(): Promise<GraphQLProjectListRepository[]> {
+    const previousScan = await this.configFileScanRepository.get()
+    if (previousScan && Date.now() - previousScan.scannedAt < CONFIG_FILE_SCAN_REUSE_MS) {
+      return previousScan.repositories
+    }
+    const scannedAt = Date.now()
+    const enumerated = await this.accessibleRepositoriesDataSource.getAccessibleRepositories()
+    const repositories = await this.scanForConfigFiles(enumerated, previousScan)
+    await this.configFileScanRepository.set({
+      scannedAt,
+      enumeratedRepositories: enumerated.map(repo => `${repo.owner}/${repo.name}`),
+      repositories
+    })
+    return repositories
+  }
+
+  // A repository's HEAD, and therefore its configuration file, can only change through a
+  // push, so probing every accessible repository is only needed once per user. Later
+  // scans probe just the repositories that could have changed: ones not enumerated before
+  // (created, renamed, or newly granted access) and ones pushed since the previous scan.
+  // Results for everything else are carried over, which keeps the steady-state GitHub
+  // load small enough to run on every refresh.
+  private async scanForConfigFiles(
+    enumerated: AccessibleRepositoryRef[],
+    previousScan: ConfigFileScan | undefined
+  ): Promise<GraphQLProjectListRepository[]> {
+    let probeRefs = enumerated
+    let carriedOver: GraphQLProjectListRepository[] = []
+    if (previousScan) {
+      const previouslyEnumerated = new Set(previousScan.enumeratedRepositories)
+      const pushedSince = previousScan.scannedAt - CONFIG_FILE_SCAN_PUSH_OVERLAP_MS
+      probeRefs = enumerated.filter(repo =>
+        !previouslyEnumerated.has(`${repo.owner}/${repo.name}`) ||
+        (repo.pushedAt != null && Date.parse(repo.pushedAt) >= pushedSince)
       )
-    )
-
-    // The search is global, so keep private repos (access implies permission) and public
-    // repos owned by a known login; foreign public repos that happen to contain the file
-    // must not leak into the portal.
-    const refs = dedupeBy(results.flat(), repo => `${repo.owner}/${repo.name}`)
-      .filter(repo => repo.isPrivate || logins.includes(repo.owner))
-    if (refs.length === 0) return []
-
-    return await this.fetchRepositoryDetails(refs)
+      const probedKeys = new Set(probeRefs.map(repo => `${repo.owner}/${repo.name}`))
+      const enumeratedKeys = new Set(enumerated.map(repo => `${repo.owner}/${repo.name}`))
+      carriedOver = previousScan.repositories.filter(repo => {
+        const key = `${repo.owner.login}/${repo.name}`
+        return enumeratedKeys.has(key) && !probedKeys.has(key)
+      })
+    }
+    const probed = probeRefs.length > 0 ? await this.fetchRepositoryDetails(probeRefs) : []
+    const probedHits = probed.filter(repo => repo.configYml != null || repo.configYaml != null)
+    return [...carriedOver, ...probedHits]
   }
 
   private async fetchRepositoryDetails(
+    repos: Array<{ owner: string; name: string }>
+  ): Promise<GraphQLProjectListRepository[]> {
+    const chunks: Array<typeof repos> = []
+    for (let i = 0; i < repos.length; i += MAX_REPOSITORY_DETAILS_ALIASES_PER_QUERY) {
+      chunks.push(repos.slice(i, i + MAX_REPOSITORY_DETAILS_ALIASES_PER_QUERY))
+    }
+    const chunkResults: GraphQLProjectListRepository[][] = new Array(chunks.length)
+    let nextChunkIndex = 0
+    const worker = async () => {
+      while (nextChunkIndex < chunks.length) {
+        const index = nextChunkIndex
+        nextChunkIndex += 1
+        // Chunks are deliberately awaited in a loop: each worker processes one chunk at a
+        // time so at most MAX_CONCURRENT_REPOSITORY_DETAILS_QUERIES queries are in flight.
+        // eslint-disable-next-line no-await-in-loop
+        chunkResults[index] = await this.fetchRepositoryDetailsChunk(chunks[index])
+      }
+    }
+    const workerCount = Math.min(MAX_CONCURRENT_REPOSITORY_DETAILS_QUERIES, chunks.length)
+    await Promise.all(Array.from({ length: workerCount }, worker))
+    return chunkResults.flat()
+  }
+
+  private async fetchRepositoryDetailsChunk(
     repos: Array<{ owner: string; name: string }>
   ): Promise<GraphQLProjectListRepository[]> {
     const aliases = repos.map((repo, i) => `
@@ -139,7 +227,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     `).join("\n")
 
     const query = `query ConfigFileRepos { ${aliases} }`
-    const response = await this.graphQlClient.graphql({ query })
+    const response = await this.executeRepositoryDetailsQuery(query)
 
     const results: GraphQLProjectListRepository[] = []
     repos.forEach((_, i) => {
@@ -147,6 +235,35 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
       if (repo) results.push(repo)
     })
     return results
+  }
+
+  private async executeRepositoryDetailsQuery(
+    query: string
+  ): Promise<Record<string, GraphQLProjectListRepository | null>> {
+    for (let attempt = 0; ; attempt++) {
+      let response: Record<string, GraphQLProjectListRepository | null> | null | undefined
+      try {
+        // Deliberately awaited in a loop: each attempt must finish before retrying.
+        // eslint-disable-next-line no-await-in-loop
+        response = await this.graphQlClient.graphql({ query })
+      } catch (error) {
+        // A single unresolvable repository (deleted mid-scan, DMCA'd, IP-restricted) fails
+        // the whole query with a GraphQL error that still carries the other aliases, so use
+        // that partial data instead of failing the entire scan.
+        const partialData = (error as { data?: Record<string, GraphQLProjectListRepository | null> })?.data
+        if (partialData == null) throw error
+        response = partialData
+      }
+      if (response != null) {
+        return response
+      }
+      // See EMPTY_RESPONSE_RETRY_DELAYS_MS: an empty response is a secondary rate limit.
+      if (attempt >= this.emptyResponseRetryDelaysMs.length) {
+        throw new Error("GitHub returned an empty GraphQL response for a repository details query, most likely a secondary rate limit")
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(this.emptyResponseRetryDelaysMs[attempt])
+    }
   }
 
   private async searchRepositories(
@@ -234,6 +351,10 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private makeImageURL(owner: string, repo: string, imagePath: string, oid?: string): string {
     return `/api/blob/${owner}/${repo}/${encodeURIComponent(imagePath)}?ref=${oid ?? "HEAD"}`
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function dedupeBy<T>(items: T[], key: (item: T) => string): T[] {

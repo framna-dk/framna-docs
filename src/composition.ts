@@ -19,11 +19,12 @@ import {
   GitHubLoginDataSource,
   GitHubProjectListDataSource,
   GitHubProjectDetailsDataSource,
-  GitHubCodeSearchDataSource
+  GitHubAccessibleRepositoriesDataSource
 } from "@/features/projects/data"
 import {
   CachingProjectListDataSource,
-  ProjectListRepository
+  ProjectListRepository,
+  ConfigFileScanRepository
 } from "@/features/projects/domain"
 import {
   GitHubOAuthTokenRefresher
@@ -183,14 +184,25 @@ export const encryptionService = new RsaEncryptionService({
 
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
-const gitHubCodeSearchDataSource = new GitHubCodeSearchDataSource(userGitHubClient)
+const gitHubAccessibleRepositoriesDataSource = new GitHubAccessibleRepositoriesDataSource(userGitHubClient)
+
+const configFileScanUserDataRepository = new KeyValueUserDataRepository({
+  store: new RedisKeyValueStore(env.getOrThrow("REDIS_URL")),
+  baseKey: "configFileScan"
+})
+
+const configFileScanRepository = new ConfigFileScanRepository({
+  userIDReader: session,
+  repository: configFileScanUserDataRepository
+})
 
 const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   loginsDataSource: new GitHubLoginDataSource({
     graphQlClient: userGitHubClient
   }),
   graphQlClient: userGitHubClient,
-  codeSearchDataSource: gitHubCodeSearchDataSource,
+  accessibleRepositoriesDataSource: gitHubAccessibleRepositoriesDataSource,
+  configFileScanRepository: configFileScanRepository,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
@@ -222,7 +234,8 @@ export const projectDetailsDataSource = new GitHubProjectDetailsDataSource({
 export const logOutHandler = new ErrorIgnoringLogOutHandler(
   new CompositeLogOutHandler([
     new UserDataCleanUpLogOutHandler(session, projectUserDataRepository),
-    new UserDataCleanUpLogOutHandler(session, projectListUserDataRepository)
+    new UserDataCleanUpLogOutHandler(session, projectListUserDataRepository),
+    new UserDataCleanUpLogOutHandler(session, configFileScanUserDataRepository)
   ])
 )
 

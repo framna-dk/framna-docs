@@ -11,7 +11,7 @@ import IGitHubClient, {
     UpdatePullRequestCommentRequest,
     CompareCommitsRequest,
     CompareCommitsResponse,
-    CodeSearchResult
+    AccessibleRepository
 } from "./IGitHubClient";
 import ProjectRepositoryNaming from "../utils/ProjectRepositoryNaming";
 
@@ -66,8 +66,10 @@ export class RepoRestrictedGitHubClient implements IGitHubClient {
         return this.gitHubClient.compareCommitsWithBasehead(request);
     }
 
-    searchCode(query: string): Promise<CodeSearchResult[]> {
-        return this.gitHubClient.searchCode(query);
+    // Not repo-addressed: the listing only ever contains repositories the user's own token
+    // can access, and callers decide participation per repository afterwards.
+    listRepositoriesForAuthenticatedUser(): Promise<AccessibleRepository[]> {
+        return this.gitHubClient.listRepositoriesForAuthenticatedUser();
     }
 
     // A repository is served only if it opted in to Framna Docs: either its name carries the

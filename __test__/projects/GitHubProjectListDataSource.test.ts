@@ -1,7 +1,8 @@
 import { jest } from "@jest/globals"
 import { GitHubProjectListDataSource } from "@/features/projects/data"
 import { IGitHubLoginDataSource, IGitHubGraphQLClient } from "@/features/projects/domain"
-import IGitHubCodeSearchDataSource, { CodeSearchRepository } from "@/features/projects/domain/IGitHubCodeSearchDataSource"
+import IGitHubAccessibleRepositoriesDataSource, { AccessibleRepositoryRef } from "@/features/projects/domain/IGitHubAccessibleRepositoriesDataSource"
+import IConfigFileScanRepository, { ConfigFileScan } from "@/features/projects/domain/IConfigFileScanRepository"
 
 const createMockLoginsDataSource = (logins: string[] = []): IGitHubLoginDataSource => ({
   getLogins: jest.fn<() => Promise<string[]>>().mockResolvedValue(logins)
@@ -18,28 +19,40 @@ const createMockGraphQLClient = (responses: Record<string, unknown>[] = []): IGi
   }
 }
 
-const createMockCodeSearchDataSource = (
-  repos: CodeSearchRepository[] = []
-): IGitHubCodeSearchDataSource => ({
-  searchRepositoriesContainingFile: jest.fn<() => Promise<CodeSearchRepository[]>>()
+const createMockAccessibleRepositoriesDataSource = (
+  repos: AccessibleRepositoryRef[] = []
+): IGitHubAccessibleRepositoriesDataSource => ({
+  getAccessibleRepositories: jest.fn<() => Promise<AccessibleRepositoryRef[]>>()
     .mockResolvedValue(repos)
+})
+
+const createMockConfigFileScanRepository = (
+  scan?: ConfigFileScan
+): IConfigFileScanRepository => ({
+  get: jest.fn<() => Promise<ConfigFileScan | undefined>>().mockResolvedValue(scan),
+  set: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+  delete: jest.fn<() => Promise<void>>().mockResolvedValue(undefined)
 })
 
 const createSut = (overrides: {
   loginsDataSource?: IGitHubLoginDataSource
   graphQlClient?: IGitHubGraphQLClient
-  codeSearchDataSource?: IGitHubCodeSearchDataSource
+  accessibleRepositoriesDataSource?: IGitHubAccessibleRepositoriesDataSource
+  configFileScanRepository?: IConfigFileScanRepository
   repositoryNameSuffix?: string
   projectConfigurationFilename?: string
   hiddenRepositories?: string[]
+  emptyResponseRetryDelaysMs?: number[]
 } = {}) => {
   return new GitHubProjectListDataSource({
     loginsDataSource: overrides.loginsDataSource || createMockLoginsDataSource(),
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
-    codeSearchDataSource: overrides.codeSearchDataSource || createMockCodeSearchDataSource(),
+    accessibleRepositoriesDataSource: overrides.accessibleRepositoriesDataSource || createMockAccessibleRepositoriesDataSource(),
+    configFileScanRepository: overrides.configFileScanRepository || createMockConfigFileScanRepository(),
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
-    hiddenRepositories: overrides.hiddenRepositories || []
+    hiddenRepositories: overrides.hiddenRepositories || [],
+    emptyResponseRetryDelaysMs: overrides.emptyResponseRetryDelaysMs ?? [0]
   })
 }
 
@@ -382,16 +395,16 @@ describe("GitHubProjectListDataSource", () => {
   })
 
   describe("config-file discovery", () => {
-    test("It includes repos discovered via config file even without the suffix", async () => {
+    test("It includes repos containing the config file even without the suffix", async () => {
       const graphQlClient = createMockGraphQLClient([
         { search: { results: [], pageInfo: { hasNextPage: false } } },
         { search: { results: [], pageInfo: { hasNextPage: false } } },
-        { repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+        { repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
-      const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "my-backend", isPrivate: true }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "my-backend", pushedAt: null }
       ])
-      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, accessibleRepositoriesDataSource })
 
       const result = await sut.getProjectList()
 
@@ -399,40 +412,49 @@ describe("GitHubProjectListDataSource", () => {
       expect(result[0].name).toBe("my-backend")
     })
 
-    test("It searches for both config file variants", async () => {
-      const codeSearchDataSource = createMockCodeSearchDataSource([])
-      const loginsDataSource = createMockLoginsDataSource(["jdoe", "acme"])
-      const sut = createSut({ loginsDataSource, codeSearchDataSource })
-
-      await sut.getProjectList()
-
-      const filenames = (codeSearchDataSource.searchRepositoriesContainingFile as jest.Mock).mock.calls.map(call => call[0])
-      expect(filenames.sort()).toEqual([".framna-docs.yaml", ".framna-docs.yml"])
-    })
-
-    test("It keeps private repos and public repos owned by a login, and drops foreign public repos", async () => {
+    test("It drops accessible repos that do not contain the config file", async () => {
       const graphQlClient = createMockGraphQLClient([
         { search: { results: [], pageInfo: { hasNextPage: false } } },
-        { search: { results: [], pageInfo: { hasNextPage: false } } },
         {
-          repo_0: { name: "private-elsewhere", owner: { login: "other-org" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "a" } } },
-          repo_1: { name: "public-own", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "b" } } }
+          repo_0: { name: "opted-in", owner: { login: "acme" }, configYml: null, configYaml: { text: "" }, defaultBranchRef: { target: { oid: "a" } } },
+          repo_1: { name: "unrelated", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "b" } } }
         }
       ])
-      const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "other-org", name: "private-elsewhere", isPrivate: true },
-        { owner: "acme", name: "public-own", isPrivate: false },
-        { owner: "stranger", name: "public-foreign", isPrivate: false }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "opted-in", pushedAt: null },
+        { owner: "acme", name: "unrelated", pushedAt: null }
       ])
-      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource })
 
       const result = await sut.getProjectList()
 
-      const names = result.map(p => p.name).sort()
-      expect(names).toEqual(["private-elsewhere", "public-own"])
+      expect(result.map(p => p.name)).toEqual(["opted-in"])
     })
 
-    test("It deduplicates repos found by both suffix search and config-file search", async () => {
+    test("It probes accessible repos in chunks and merges the results", async () => {
+      const refs = Array.from({ length: 101 }, (_, i) => ({ owner: "acme", name: `repo-${i}`, pushedAt: null }))
+      const chunkResponse = (names: string[]) => Object.fromEntries(
+        names.map((name, i) => [
+          `repo_${i}`,
+          { name, owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } }
+        ])
+      )
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        chunkResponse(refs.slice(0, 50).map(ref => ref.name)),
+        chunkResponse(refs.slice(50, 100).map(ref => ref.name)),
+        chunkResponse(refs.slice(100).map(ref => ref.name))
+      ])
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource(refs)
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result).toHaveLength(101)
+      expect(graphQlClient.graphql).toHaveBeenCalledTimes(4)
+    })
+
+    test("It deduplicates repos found by both suffix search and config-file discovery", async () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
@@ -440,12 +462,12 @@ describe("GitHubProjectListDataSource", () => {
             pageInfo: { hasNextPage: false }
           }
         },
-        { repo_0: { name: "service-openapi", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+        { repo_0: { name: "service-openapi", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
-      const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "service-openapi", isPrivate: true }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "service-openapi", pushedAt: null }
       ])
-      const sut = createSut({ graphQlClient, codeSearchDataSource })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource })
 
       const result = await sut.getProjectList()
 
@@ -466,10 +488,10 @@ describe("GitHubProjectListDataSource", () => {
           }
         }
       ])
-      const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "my-backend", isPrivate: true }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "my-backend", pushedAt: null }
       ])
-      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, accessibleRepositoriesDataSource })
 
       const result = await sut.getProjectList()
 
@@ -486,12 +508,12 @@ describe("GitHubProjectListDataSource", () => {
           }
         },
         { search: { results: [], pageInfo: { hasNextPage: false } } },
-        { repo_0: { name: "polaris", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
+        { repo_0: { name: "polaris", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "abc" } } } }
       ])
-      const codeSearchDataSource = createMockCodeSearchDataSource([
-        { owner: "acme", name: "polaris", isPrivate: true }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "polaris", pushedAt: null }
       ])
-      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, codeSearchDataSource })
+      const sut = createSut({ loginsDataSource: createMockLoginsDataSource(["acme"]), graphQlClient, accessibleRepositoriesDataSource })
 
       const result = await sut.getProjectList()
 
@@ -500,7 +522,184 @@ describe("GitHubProjectListDataSource", () => {
       consoleWarn.mockRestore()
     })
 
-    test("It returns suffix-discovered repos when code search finds nothing", async () => {
+    test("It reuses a fresh scan without enumerating repositories", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } }
+      ])
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([])
+      const configFileScanRepository = createMockConfigFileScanRepository({
+        scannedAt: Date.now(),
+        enumeratedRepositories: ["acme/my-backend"],
+        repositories: [
+          { name: "my-backend", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } }
+        ]
+      })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource, configFileScanRepository })
+
+      const result = await sut.getProjectList()
+
+      expect(result.map(p => p.name)).toEqual(["my-backend"])
+      expect(accessibleRepositoriesDataSource.getAccessibleRepositories).not.toHaveBeenCalled()
+      expect(configFileScanRepository.set).not.toHaveBeenCalled()
+    })
+
+    test("It rescans and stores the result when the cached scan is stale", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        { repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } } }
+      ])
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "my-backend", pushedAt: null }
+      ])
+      const configFileScanRepository = createMockConfigFileScanRepository({
+        scannedAt: Date.now() - 11 * 60 * 1000,
+        enumeratedRepositories: [],
+        repositories: []
+      })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource, configFileScanRepository })
+
+      const result = await sut.getProjectList()
+
+      expect(result.map(p => p.name)).toEqual(["my-backend"])
+      expect(configFileScanRepository.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repositories: [expect.objectContaining({ name: "my-backend" })]
+        })
+      )
+    })
+
+    test("It carries over unchanged repos and probes only new and recently pushed ones", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } },
+        {
+          repo_0: { name: "just-pushed", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } },
+          repo_1: { name: "brand-new", owner: { login: "acme" }, configYml: null, configYaml: null, defaultBranchRef: { target: { oid: "b" } } }
+        }
+      ])
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "quiet", pushedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() },
+        { owner: "acme", name: "just-pushed", pushedAt: new Date().toISOString() },
+        { owner: "acme", name: "brand-new", pushedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() }
+      ])
+      const configFileScanRepository = createMockConfigFileScanRepository({
+        scannedAt: Date.now() - 2 * 3600 * 1000,
+        enumeratedRepositories: ["acme/quiet", "acme/just-pushed"],
+        repositories: [
+          { name: "quiet", owner: { login: "acme" }, configYml: { text: "name: Quiet" }, configYaml: null, defaultBranchRef: { target: { oid: "c" } } }
+        ]
+      })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource, configFileScanRepository })
+
+      const result = await sut.getProjectList()
+
+      // "quiet" is carried over without probing, "just-pushed" is probed and found,
+      // "brand-new" is probed (never enumerated before) and has no config file.
+      expect(result.map(p => p.name).sort()).toEqual(["just-pushed", "quiet"])
+      const detailQuery = (graphQlClient.graphql as jest.Mock).mock.calls
+        .map(call => (call[0] as { query: string }).query)
+        .find(query => query.includes("ConfigFileRepos"))
+      expect(detailQuery).toContain("just-pushed")
+      expect(detailQuery).toContain("brand-new")
+      expect(detailQuery).not.toContain("quiet")
+    })
+
+    test("It drops carried-over repos that are no longer accessible", async () => {
+      const graphQlClient = createMockGraphQLClient([
+        { search: { results: [], pageInfo: { hasNextPage: false } } }
+      ])
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "still-here", pushedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() }
+      ])
+      const configFileScanRepository = createMockConfigFileScanRepository({
+        scannedAt: Date.now() - 2 * 3600 * 1000,
+        enumeratedRepositories: ["acme/still-here", "acme/deleted"],
+        repositories: [
+          { name: "still-here", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } },
+          { name: "deleted", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "b" } } }
+        ]
+      })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource, configFileScanRepository })
+
+      const result = await sut.getProjectList()
+
+      expect(result.map(p => p.name)).toEqual(["still-here"])
+    })
+
+    test("It retries a chunk when GitHub answers with an empty response", async () => {
+      let detailCalls = 0
+      const graphQlClient: IGitHubGraphQLClient = {
+        graphql: jest.fn<(request: { query: string }) => Promise<unknown>>()
+          .mockImplementation(request => {
+            if (!request.query.includes("ConfigFileRepos")) {
+              return Promise.resolve({ search: { results: [], pageInfo: { hasNextPage: false } } })
+            }
+            detailCalls += 1
+            if (detailCalls === 1) {
+              // A secondary rate limit surfaces as a response with neither data nor errors.
+              return Promise.resolve(undefined)
+            }
+            return Promise.resolve({
+              repo_0: { name: "my-backend", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } }
+            })
+          })
+      }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "my-backend", pushedAt: null }
+      ])
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result.map(p => p.name)).toEqual(["my-backend"])
+      expect(detailCalls).toBe(2)
+    })
+
+    test("It fails the scan when empty responses persist after retries", async () => {
+      const graphQlClient: IGitHubGraphQLClient = {
+        graphql: jest.fn<(request: { query: string }) => Promise<unknown>>()
+          .mockImplementation(request => {
+            if (!request.query.includes("ConfigFileRepos")) {
+              return Promise.resolve({ search: { results: [], pageInfo: { hasNextPage: false } } })
+            }
+            return Promise.resolve(undefined)
+          })
+      }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "my-backend", pushedAt: null }
+      ])
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource, emptyResponseRetryDelaysMs: [] })
+
+      await expect(sut.getProjectList()).rejects.toThrow("empty GraphQL response")
+    })
+
+    test("It uses partial data when a repository in a chunk cannot be resolved", async () => {
+      const partialError = Object.assign(new Error("Could not resolve to a Repository"), {
+        data: {
+          repo_0: { name: "healthy", owner: { login: "acme" }, configYml: { text: "" }, configYaml: null, defaultBranchRef: { target: { oid: "a" } } },
+          repo_1: null
+        }
+      })
+      const graphQlClient: IGitHubGraphQLClient = {
+        graphql: jest.fn<(request: { query: string }) => Promise<unknown>>()
+          .mockImplementation(request => {
+            if (request.query.includes("ConfigFileRepos")) {
+              return Promise.reject(partialError)
+            }
+            return Promise.resolve({ search: { results: [], pageInfo: { hasNextPage: false } } })
+          })
+      }
+      const accessibleRepositoriesDataSource = createMockAccessibleRepositoriesDataSource([
+        { owner: "acme", name: "healthy", pushedAt: null },
+        { owner: "acme", name: "vanished", pushedAt: null }
+      ])
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource })
+
+      const result = await sut.getProjectList()
+
+      expect(result.map(p => p.name)).toEqual(["healthy"])
+    })
+
+    test("It returns suffix-discovered repos when no accessible repo contains the config file", async () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
@@ -509,7 +708,7 @@ describe("GitHubProjectListDataSource", () => {
           }
         }
       ])
-      const sut = createSut({ graphQlClient, codeSearchDataSource: createMockCodeSearchDataSource([]) })
+      const sut = createSut({ graphQlClient, accessibleRepositoriesDataSource: createMockAccessibleRepositoriesDataSource([]) })
 
       const result = await sut.getProjectList()
 

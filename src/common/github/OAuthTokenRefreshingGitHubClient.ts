@@ -12,7 +12,7 @@ import IGitHubClient, {
   RepositoryContent,
   PullRequestComment,
   PullRequestFile,
-  CodeSearchResult
+  AccessibleRepository
 } from "./IGitHubClient"
 
 const HttpErrorSchema = z.object({
@@ -86,9 +86,9 @@ export default class OAuthTokenRefreshingGitHubClient implements IGitHubClient {
     })
   }
 
-  async searchCode(query: string): Promise<CodeSearchResult[]> {
+  async listRepositoriesForAuthenticatedUser(): Promise<AccessibleRepository[]> {
     return await this.send(async () => {
-      return await this.gitHubClient.searchCode(query)
+      return await this.gitHubClient.listRepositoriesForAuthenticatedUser()
     })
   }
 

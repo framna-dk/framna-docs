@@ -25,7 +25,10 @@ const createMockGitHubClient = (
         return []
     },
     async addCommentToPullRequest() {},
-    async updatePullRequestComment() {}
+    async updatePullRequestComment() {},
+    async listRepositoriesForAuthenticatedUser() {
+        return []
+    }
 })
 
 test("It rejects non-GitHub URLs for base spec", async () => {

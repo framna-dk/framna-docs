@@ -22,7 +22,7 @@ describe('RepoRestrictedGitHubClient', () => {
         addCommentToPullRequest: jest.fn(),
         updatePullRequestComment: jest.fn(),
         compareCommitsWithBasehead: jest.fn(),
-        searchCode: jest.fn(),
+        listRepositoriesForAuthenticatedUser: jest.fn(),
     };
 
     const notFoundError = () => Object.assign(new Error("Not Found"), { status: 404 });
