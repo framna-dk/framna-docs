@@ -113,6 +113,41 @@ describe("GitHubProjectListDataSource", () => {
     expect(result[0].displayName).toBe("My Awesome Project")
   })
 
+  test("It surfaces an invalid config as configError instead of failing the list", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {})
+    const graphQlClient = createMockGraphQLClient([
+      {
+        search: {
+          results: [
+            {
+              name: "broken-project-openapi",
+              owner: { login: "acme" },
+              configYml: { text: "name: Broken Project\nimage:\n  - not\n  - a-string" }
+            },
+            {
+              name: "healthy-project-openapi",
+              owner: { login: "acme" },
+              configYml: { text: "name: Healthy Project" }
+            }
+          ],
+          pageInfo: { hasNextPage: false }
+        }
+      }
+    ])
+    const sut = createSut({ graphQlClient })
+
+    const result = await sut.getProjectList()
+
+    expect(result).toHaveLength(2)
+    const broken = result.find(p => p.name === "broken-project")
+    expect(broken?.displayName).toBe("broken-project")
+    expect(broken?.configError).toMatch(/^image: \S.*/)
+    const healthy = result.find(p => p.name === "healthy-project")
+    expect(healthy?.displayName).toBe("Healthy Project")
+    expect(healthy?.configError).toBeUndefined()
+    consoleError.mockRestore()
+  })
+
   test("It uses configYaml when configYml is not present", async () => {
     const graphQlClient = createMockGraphQLClient([
       {
