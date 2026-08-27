@@ -354,3 +354,58 @@ test("It supports specifications with URL-encoded spaces in their names", () => 
   expect(sut.version!.id).toEqual("main")
   expect(sut.specification!.id).toEqual("openapi with spaces.yml")
 })
+
+test("It selects a specification whose ID contains an URL-encoded slash", () => {
+  const sut = getProjectSelectionFromPath({
+    path: "/acme/polaris-monorepo/main/openapi%2Fopenapi-bundle.yml",
+    projects: [{
+      id: "polaris-monorepo",
+      name: "polaris-monorepo",
+      displayName: "Polaris (monorepo)",
+      versions: [{
+        id: "main",
+        name: "main",
+        isDefault: true,
+        specifications: [{
+          id: "openapi/openapi-bundle.yml",
+          name: "Polaris API",
+          url: "https://example.com/openapi-bundle.yml"
+        }, {
+          id: "openapi/datatjek-openapi.yml",
+          name: "DataCheck",
+          url: "https://example.com/datatjek-openapi.yml"
+        }]
+      }],
+      owner: "acme",
+      ownerUrl: "https://example.com/acme"
+    }]
+  })
+  expect(sut.project!.name).toEqual("polaris-monorepo")
+  expect(sut.version!.id).toEqual("main")
+  expect(sut.specification!.id).toEqual("openapi/openapi-bundle.yml")
+})
+
+test("It still selects a specification in a version whose name contains a literal slash", () => {
+  const sut = getProjectSelectionFromPath({
+    path: "/acme/foo/feature/branch/hello.yml",
+    projects: [{
+      id: "foo",
+      name: "foo",
+      displayName: "foo",
+      versions: [{
+        id: "feature/branch",
+        name: "feature/branch",
+        isDefault: false,
+        specifications: [{
+          id: "hello.yml",
+          name: "hello.yml",
+          url: "https://example.com/hello.yml"
+        }]
+      }],
+      owner: "acme",
+      ownerUrl: "https://example.com/acme"
+    }]
+  })
+  expect(sut.version!.id).toEqual("feature/branch")
+  expect(sut.specification!.id).toEqual("hello.yml")
+})

@@ -81,6 +81,14 @@ export type CompareCommitsResponse = {
   readonly mergeBaseSha: string
 }
 
+export type CodeSearchResult = {
+  readonly repository: {
+    readonly owner: { readonly login: string }
+    readonly name: string
+    readonly private: boolean
+  }
+}
+
 export default interface IGitHubClient {
   graphql(request: GraphQLQueryRequest): Promise<GraphQlQueryResponse>
   getRepositoryContent(request: GetRepositoryContentRequest): Promise<RepositoryContent>
@@ -89,4 +97,5 @@ export default interface IGitHubClient {
   addCommentToPullRequest(request: AddCommentToPullRequestRequest): Promise<void>
   updatePullRequestComment(request: UpdatePullRequestCommentRequest): Promise<void>
   compareCommitsWithBasehead(request: CompareCommitsRequest): Promise<CompareCommitsResponse>
+  searchCode(query: string): Promise<CodeSearchResult[]>
 }

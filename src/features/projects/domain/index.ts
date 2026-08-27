@@ -1,4 +1,6 @@
 export { default as CachingProjectListDataSource } from "./CachingProjectListDataSource"
+export type { default as IGitHubCodeSearchDataSource } from "./IGitHubCodeSearchDataSource"
+export type { CodeSearchRepository } from "./IGitHubCodeSearchDataSource"
 export { default as getProjectSelectionFromPath } from "./getProjectSelectionFromPath"
 export type { default as IGitHubLoginDataSource } from "./IGitHubLoginDataSource"
 export type { default as IGitHubGraphQLClient } from "./IGitHubGraphQLClient"

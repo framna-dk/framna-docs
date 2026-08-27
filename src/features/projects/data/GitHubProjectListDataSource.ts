@@ -1,5 +1,4 @@
-import { ZodError } from "zod"
-import { splitOwnerAndRepository } from "@/common"
+import { splitOwnerAndRepository, ProjectRepositoryNaming } from "@/common"
 import {
   ProjectSummary,
   IProjectListDataSource,
@@ -8,15 +7,7 @@ import {
   ProjectConfigParser
 } from "../domain"
 import IProjectConfig from "../domain/IProjectConfig"
-
-function formatConfigError(error: unknown): string {
-  if (error instanceof ZodError) {
-    return error.issues
-      .map(issue => issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message)
-      .join("; ")
-  }
-  return error instanceof Error ? error.message : String(error)
-}
+import IGitHubCodeSearchDataSource from "../domain/IGitHubCodeSearchDataSource"
 
 type GraphQLProjectListRepository = {
   readonly name: string
@@ -39,21 +30,22 @@ type GraphQLProjectListRepository = {
 export default class GitHubProjectListDataSource implements IProjectListDataSource {
   private readonly loginsDataSource: IGitHubLoginDataSource
   private readonly graphQlClient: IGitHubGraphQLClient
-  private readonly repositoryNameSuffix: string
-  private readonly projectConfigurationFilename: string
+  private readonly codeSearchDataSource: IGitHubCodeSearchDataSource
+  private readonly naming: ProjectRepositoryNaming
   private readonly hiddenRepositories: { owner: string; repository: string }[]
 
   constructor(config: {
     loginsDataSource: IGitHubLoginDataSource
     graphQlClient: IGitHubGraphQLClient
+    codeSearchDataSource: IGitHubCodeSearchDataSource
     repositoryNameSuffix: string
     projectConfigurationFilename: string
     hiddenRepositories: string[]
   }) {
     this.loginsDataSource = config.loginsDataSource
     this.graphQlClient = config.graphQlClient
-    this.repositoryNameSuffix = config.repositoryNameSuffix
-    this.projectConfigurationFilename = config.projectConfigurationFilename.replace(/\.ya?ml$/, "")
+    this.codeSearchDataSource = config.codeSearchDataSource
+    this.naming = new ProjectRepositoryNaming(config)
     this.hiddenRepositories = config.hiddenRepositories
       .map(splitOwnerAndRepository)
       .filter((e): e is { owner: string; repository: string } => e !== undefined)
@@ -75,18 +67,86 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   }
 
   private async getRepositoriesForLogins(logins: string[]): Promise<GraphQLProjectListRepository[]> {
+    const [suffixRepos, configFileRepos] = await Promise.all([
+      this.getRepositoriesForLoginsByNameSuffix(logins),
+      this.getRepositoriesForLoginsByConfigFile(logins)
+    ])
+    const repos = dedupeBy(
+      [...suffixRepos, ...configFileRepos],
+      repo => `${repo.owner.login}/${repo.name}`
+    )
+    return this.resolveProjectNameCollisions(repos)
+  }
+
+  // "foo-openapi" and "foo" both map to the project name "foo". Project details resolves the
+  // suffixed repository first, so the list must do the same: keep the suffixed repo and drop
+  // the shadowed one, otherwise the list shows entries that cannot be reached.
+  private resolveProjectNameCollisions(repos: GraphQLProjectListRepository[]): GraphQLProjectListRepository[] {
+    const byProject = new Map<string, GraphQLProjectListRepository>()
+    for (const repo of repos) {
+      const key = `${repo.owner.login}/${this.naming.projectName(repo.name)}`
+      const existing = byProject.get(key)
+      if (!existing) {
+        byProject.set(key, repo)
+        continue
+      }
+      const winner = this.naming.hasSuffix(existing.name) ? existing : repo
+      const shadowed = winner === existing ? repo : existing
+      byProject.set(key, winner)
+      console.warn(`Project name collision for ${key}: ${winner.owner.login}/${winner.name} shadows ${shadowed.owner.login}/${shadowed.name}`)
+    }
+    return Array.from(byProject.values())
+  }
+
+  private async getRepositoriesForLoginsByNameSuffix(logins: string[]): Promise<GraphQLProjectListRepository[]> {
     const searchQueries: string[] = [
-      `"${this.repositoryNameSuffix}" in:name is:private`,
-      ...logins.map(login => `"${this.repositoryNameSuffix}" in:name user:${login} is:public`)
+      `"${this.naming.suffix}" in:name is:private`,
+      ...logins.map(login => `"${this.naming.suffix}" in:name user:${login} is:public`)
     ]
 
     const results = await Promise.all(
       searchQueries.map(query => this.searchRepositories(query))
     )
 
-    const allRepos = results.flat()
-    const uniqueRepos = this.deduplicateRepositories(allRepos)
-    return uniqueRepos.filter(repo => repo.name.endsWith(this.repositoryNameSuffix))
+    return dedupeBy(results.flat(), repo => `${repo.owner.login}/${repo.name}`)
+      .filter(repo => this.naming.hasSuffix(repo.name))
+  }
+
+  private async getRepositoriesForLoginsByConfigFile(logins: string[]): Promise<GraphQLProjectListRepository[]> {
+    const results = await Promise.all(
+      this.naming.configFileVariants.map(filename =>
+        this.codeSearchDataSource.searchRepositoriesContainingFile(filename)
+      )
+    )
+
+    // The search is global, so keep private repos (access implies permission) and public
+    // repos owned by a known login; foreign public repos that happen to contain the file
+    // must not leak into the portal.
+    const refs = dedupeBy(results.flat(), repo => `${repo.owner}/${repo.name}`)
+      .filter(repo => repo.isPrivate || logins.includes(repo.owner))
+    if (refs.length === 0) return []
+
+    return await this.fetchRepositoryDetails(refs)
+  }
+
+  private async fetchRepositoryDetails(
+    repos: Array<{ owner: string; name: string }>
+  ): Promise<GraphQLProjectListRepository[]> {
+    const aliases = repos.map((repo, i) => `
+      repo_${i}: repository(owner: ${JSON.stringify(repo.owner)}, name: ${JSON.stringify(repo.name)}) {
+        ${this.repositoryFields()}
+      }
+    `).join("\n")
+
+    const query = `query ConfigFileRepos { ${aliases} }`
+    const response = await this.graphQlClient.graphql({ query })
+
+    const results: GraphQLProjectListRepository[] = []
+    repos.forEach((_, i) => {
+      const repo = response[`repo_${i}`]
+      if (repo) results.push(repo)
+    })
+    return results
   }
 
   private async searchRepositories(
@@ -99,19 +159,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
         search(query: $searchQuery, type: REPOSITORY, first: 100, after: $cursor) {
           results: nodes {
             ... on Repository {
-              name
-              owner { login }
-              defaultBranchRef {
-                target {
-                  ... on Commit { oid }
-                }
-              }
-              configYml: object(expression: "HEAD:${this.projectConfigurationFilename}.yml") {
-                ... on Blob { text }
-              }
-              configYaml: object(expression: "HEAD:${this.projectConfigurationFilename}.yaml") {
-                ... on Blob { text }
-              }
+              ${this.repositoryFields()}
             }
           }
           pageInfo {
@@ -138,19 +186,25 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     return response.search.results.concat(nextResults)
   }
 
-  private deduplicateRepositories(repos: GraphQLProjectListRepository[]): GraphQLProjectListRepository[] {
-    const seen = new Set<string>()
-    return repos.filter(repo => {
-      const key = `${repo.owner.login}/${repo.name}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+  private repositoryFields(): string {
+    return `
+      name
+      owner { login }
+      defaultBranchRef {
+        target { ... on Commit { oid } }
+      }
+      configYml: object(expression: ${JSON.stringify(`HEAD:${this.naming.configFileYml}`)}) {
+        ... on Blob { text }
+      }
+      configYaml: object(expression: ${JSON.stringify(`HEAD:${this.naming.configFileYaml}`)}) {
+        ... on Blob { text }
+      }
+    `
   }
 
   private mapToSummary(repo: GraphQLProjectListRepository): ProjectSummary {
     const { config, configError } = this.parseConfig(repo)
-    const defaultName = repo.name.replace(new RegExp(this.repositoryNameSuffix + "$"), "")
+    const defaultName = this.naming.projectName(repo.name)
 
     return {
       id: `${repo.owner.login}-${defaultName}`,
@@ -167,18 +221,27 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private parseConfig(repo: GraphQLProjectListRepository): { config: IProjectConfig | null, configError?: string } {
     const yml = repo.configYml || repo.configYaml
     if (!yml?.text) return { config: null }
-    const parser = new ProjectConfigParser()
-    try {
-      return { config: parser.parse(yml.text) }
-    } catch (error) {
+    const { config, error } = new ProjectConfigParser().tryParse(yml.text)
+    if (error) {
       // A broken config in one repository must not take down the whole project list.
       // Surface the error on the project instead.
-      console.error(`Invalid project config in ${repo.owner.login}/${repo.name}:`, error)
-      return { config: null, configError: formatConfigError(error) }
+      console.error(`Invalid project config in ${repo.owner.login}/${repo.name}: ${error}`)
+      return { config: null, configError: error }
     }
+    return { config }
   }
 
   private makeImageURL(owner: string, repo: string, imagePath: string, oid?: string): string {
     return `/api/blob/${owner}/${repo}/${encodeURIComponent(imagePath)}?ref=${oid ?? "HEAD"}`
   }
+}
+
+function dedupeBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>()
+  return items.filter(item => {
+    const k = key(item)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
 }
