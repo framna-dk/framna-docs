@@ -58,7 +58,7 @@
     "@types/nprogress": "^0.2.3",
     "@types/pg": "^8.20.3",
     "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react-dom": "^19.2.7",
     "@typescript-eslint/eslint-plugin": "^8.66.0",
     "@typescript-eslint/parser": "^8.66.0",
     "typescript-eslint": "^8.66.0",
