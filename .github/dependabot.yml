@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "monthly"
     groups:
@@ -34,3 +35,8 @@ updates:
           - "typescript"
           - "typescript-eslint"
           - "@typescript-eslint/*"
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "daily"
