@@ -56,6 +56,7 @@ import RemoteConfigEncoder from "./features/projects/domain/RemoteConfigEncoder"
 import { OasDiffCalculator } from "./features/diff/data/OasDiffCalculator"
 import { CachingOasDiffCalculator } from "./features/diff/data/CachingOasDiffCalculator"
 import { IOasDiffCalculator } from "./features/diff/data/IOasDiffCalculator"
+import PostgresProjectDiscoveryRepository from "./features/projects/data/PostgresProjectDiscoveryRepository"
 
 const gitHubAppCredentials = {
   appId: env.getOrThrow("GITHUB_APP_ID"),
@@ -192,6 +193,7 @@ const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   }),
   graphQlClient: userGitHubClient,
   codeSearchDataSource: gitHubCodeSearchDataSource,
+  discoveryRepository: new PostgresProjectDiscoveryRepository(db),
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))

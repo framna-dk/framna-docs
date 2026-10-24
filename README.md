@@ -41,6 +41,8 @@ Please refer to the following articles in [the wiki](https://github.com/shapehq/
 - [Updating Documentation](https://github.com/shapehq/framna-docs/wiki/Updating-Documentation)
 - [Deploying Framna Docs](https://github.com/shapehq/framna-docs/wiki/Deploying-Framna-Docs)
 
+For repositories awaiting GitHub code-search indexing, see the [database discovery list](docs/project-discovery.md).
+
 ### Install the OpenAPI diff tool locally
 
 Framna Docs relies on the [`oasdiff`](https://github.com/oasdiff/oasdiff) CLI when comparing specifications.  

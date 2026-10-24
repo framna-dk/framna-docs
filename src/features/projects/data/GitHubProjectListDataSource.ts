@@ -8,9 +8,11 @@ import {
 } from "../domain"
 import IProjectConfig from "../domain/IProjectConfig"
 import IGitHubCodeSearchDataSource from "../domain/IGitHubCodeSearchDataSource"
+import IProjectDiscoveryRepository from "../domain/IProjectDiscoveryRepository"
 
 type GraphQLProjectListRepository = {
   readonly name: string
+  readonly isPrivate?: boolean
   readonly owner: {
     readonly login: string
   }
@@ -31,6 +33,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private readonly loginsDataSource: IGitHubLoginDataSource
   private readonly graphQlClient: IGitHubGraphQLClient
   private readonly codeSearchDataSource: IGitHubCodeSearchDataSource
+  private readonly discoveryRepository: IProjectDiscoveryRepository
   private readonly naming: ProjectRepositoryNaming
   private readonly hiddenRepositories: { owner: string; repository: string }[]
 
@@ -38,6 +41,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     loginsDataSource: IGitHubLoginDataSource
     graphQlClient: IGitHubGraphQLClient
     codeSearchDataSource: IGitHubCodeSearchDataSource
+    discoveryRepository: IProjectDiscoveryRepository
     repositoryNameSuffix: string
     projectConfigurationFilename: string
     hiddenRepositories: string[]
@@ -45,6 +49,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     this.loginsDataSource = config.loginsDataSource
     this.graphQlClient = config.graphQlClient
     this.codeSearchDataSource = config.codeSearchDataSource
+    this.discoveryRepository = config.discoveryRepository
     this.naming = new ProjectRepositoryNaming(config)
     this.hiddenRepositories = config.hiddenRepositories
       .map(splitOwnerAndRepository)
@@ -67,14 +72,46 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   }
 
   private async getRepositoriesForLogins(logins: string[]): Promise<GraphQLProjectListRepository[]> {
-    const [suffixRepos, configFileRepos] = await Promise.all([
+    const [suffixRepos, configFileRepos, registeredRepos] = await Promise.all([
       this.getRepositoriesForLoginsByNameSuffix(logins),
-      this.getRepositoriesForLoginsByConfigFile(logins)
+      this.getRepositoriesForLoginsByConfigFile(logins),
+      this.getRegisteredRepositories(logins)
     ])
     return dedupeBy(
-      [...suffixRepos, ...configFileRepos],
-      repo => `${repo.owner.login}/${repo.name}`
+      [...suffixRepos, ...configFileRepos, ...registeredRepos],
+      repo => `${repo.owner.login}/${repo.name}`.toLowerCase()
     )
+  }
+
+  private async getRegisteredRepositories(logins: string[]): Promise<GraphQLProjectListRepository[]> {
+    const registered = dedupeBy(
+      await this.discoveryRepository.getRepositories(),
+      repo => `${repo.owner}/${repo.name}`.toLowerCase()
+    )
+    const knownOwners = new Set(logins.map(login => login.toLowerCase()))
+    const results = await Promise.all(registered.map(async repo => {
+      try {
+        // Probe each candidate with the user's token. A missing or inaccessible repo
+        // must not prevent other registered repositories from being discovered.
+        const response = await this.graphQlClient.graphql({
+          query: `query RegisteredRepository($owner: String!, $name: String!) {
+            repository(owner: $owner, name: $name) { ${this.repositoryFields()} }
+          }`,
+          variables: { owner: repo.owner, name: repo.name }
+        })
+        const repository = response.repository as GraphQLProjectListRepository | null
+        if (!repository) return undefined
+        // Match code-search visibility rules: accessible private repositories and
+        // public repositories belonging to the viewer or one of their organizations.
+        if (!repository.isPrivate && !knownOwners.has(repository.owner.login.toLowerCase())) return undefined
+        if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) return undefined
+        return repository
+      } catch (error) {
+        if (isNotFoundError(error)) return undefined
+        throw error
+      }
+    }))
+    return results.filter((repo): repo is GraphQLProjectListRepository => repo !== undefined)
   }
 
   private async getRepositoriesForLoginsByNameSuffix(logins: string[]): Promise<GraphQLProjectListRepository[]> {
@@ -168,6 +205,7 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private repositoryFields(): string {
     return `
       name
+      isPrivate
       owner { login }
       defaultBranchRef {
         target { ... on Commit { oid } }
@@ -214,6 +252,14 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   private makeImageURL(owner: string, repo: string, imagePath: string, oid?: string): string {
     return `/api/blob/${owner}/${repo}/${encodeURIComponent(imagePath)}?ref=${oid ?? "HEAD"}`
   }
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false
+  const details = error as { type?: string; errors?: { type?: string }[] }
+  return details.type === "NOT_FOUND" ||
+    (details.errors?.length !== undefined && details.errors.length > 0 &&
+      details.errors.every(item => item.type === "NOT_FOUND"))
 }
 
 function dedupeBy<T>(items: T[], key: (item: T) => string): T[] {
