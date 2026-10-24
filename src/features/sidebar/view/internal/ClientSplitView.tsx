@@ -26,7 +26,7 @@ const ClientSplitView = ({
   const { isMounted, isTransitionsEnabled } = useClientSplitViewTransitionEnabled()
   const [isSidebarOpen, setSidebarOpen] = useSidebarOpen()
   const [isRightSidebarOpen, setRightSidebarOpen] = useDiffbarOpen()
-  const { specification } = useProjectSelection()
+  const { selectedOwner, selectedName, version, specification } = useProjectSelection()
   const diffUrl = specification?.diffURL
   const isSidebarTogglable = useContext(SidebarTogglableContext)
   const theme = useTheme()
@@ -44,7 +44,7 @@ const ClientSplitView = ({
     if (isDiffFeatureEnabled) {
       setRightSidebarOpen(Boolean(diffUrl))
     }
-  }, [diffUrl, setRightSidebarOpen])
+  }, [selectedOwner, selectedName, version?.id, specification?.id, diffUrl, setRightSidebarOpen])
 
   // Close diff sidebar if no specification is selected
   useEffect(() => {
