@@ -5,7 +5,6 @@ import { Stack, useMediaQuery, useTheme } from "@mui/material"
 import { isMac, useKeyboardShortcut, SidebarTogglableContext } from "@/common"
 import { useSidebarOpen } from "../../data"
 import useDiffbarOpen from "../../data/useDiffbarOpen"
-import { useProjectSelection } from "@/features/projects/data"
 import ClientSplitViewTransitionContext from "./ClientSplitViewTransitionContext"
 import useClientSplitViewTransitionEnabled from "./useClientSplitViewTransitionEnabled"
 import PrimaryContainer from "./primary/Container"
@@ -26,7 +25,6 @@ const ClientSplitView = ({
   const { isMounted, isTransitionsEnabled } = useClientSplitViewTransitionEnabled()
   const [isSidebarOpen, setSidebarOpen] = useSidebarOpen()
   const [isRightSidebarOpen, setRightSidebarOpen] = useDiffbarOpen()
-  const { specification } = useProjectSelection()
   const isSidebarTogglable = useContext(SidebarTogglableContext)
   const theme = useTheme()
   // Determine if the screen size is small or larger
@@ -38,12 +36,6 @@ const ClientSplitView = ({
     }
   }, [isSidebarOpen, isSidebarTogglable, setSidebarOpen])
 
-  // Close diff sidebar if no specification is selected
-  useEffect(() => {
-    if (!specification && isRightSidebarOpen) {
-      setRightSidebarOpen(false)
-    }
-  }, [specification, isRightSidebarOpen, setRightSidebarOpen])
   useKeyboardShortcut(event => {
     const isActionKey = isMac() ? event.metaKey : event.ctrlKey
     if (isActionKey && event.key === ".") {
