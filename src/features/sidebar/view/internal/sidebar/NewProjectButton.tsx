@@ -16,7 +16,7 @@ const NewProjectButton = () => {
   return (
     <List disablePadding sx={{ margin: 0 }}>
       <ProjectListItemTemplate
-        title="New Project"
+        title="Add project"
         selected={pathname === "/new"}
         avatar={
           <ProjectAvatarSquircle

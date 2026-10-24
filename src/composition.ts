@@ -57,6 +57,7 @@ import { OasDiffCalculator } from "./features/diff/data/OasDiffCalculator"
 import { CachingOasDiffCalculator } from "./features/diff/data/CachingOasDiffCalculator"
 import { IOasDiffCalculator } from "./features/diff/data/IOasDiffCalculator"
 import PostgresProjectDiscoveryRepository from "./features/projects/data/PostgresProjectDiscoveryRepository"
+import RegisterProject from "./features/new-project/domain/RegisterProject"
 
 const gitHubAppCredentials = {
   appId: env.getOrThrow("GITHUB_APP_ID"),
@@ -186,6 +187,7 @@ export const encryptionService = new RsaEncryptionService({
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
 const gitHubCodeSearchDataSource = new GitHubCodeSearchDataSource(userGitHubClient)
+const discoveryRepository = new PostgresProjectDiscoveryRepository(db)
 
 const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   loginsDataSource: new GitHubLoginDataSource({
@@ -193,10 +195,16 @@ const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   }),
   graphQlClient: userGitHubClient,
   codeSearchDataSource: gitHubCodeSearchDataSource,
-  discoveryRepository: new PostgresProjectDiscoveryRepository(db),
+  discoveryRepository,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
+})
+
+export const registerProject = new RegisterProject({
+  candidates: gitHubProjectListDataSource,
+  repository: discoveryRepository,
+  repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX")
 })
 
 const projectListUserDataRepository = new KeyValueUserDataRepository({

@@ -8,7 +8,7 @@ import {
 } from "../domain"
 import IProjectConfig from "../domain/IProjectConfig"
 import IGitHubCodeSearchDataSource from "../domain/IGitHubCodeSearchDataSource"
-import IProjectDiscoveryRepository from "../domain/IProjectDiscoveryRepository"
+import type { default as IProjectDiscoveryRepository, ProjectDiscoveryRepository } from "../domain/IProjectDiscoveryRepository"
 
 type GraphQLProjectListRepository = {
   readonly name: string
@@ -65,6 +65,16 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
       .sort((a, b) => a.displayName.localeCompare(b.displayName))
   }
 
+  async getProjectCandidate(candidate: ProjectDiscoveryRepository) {
+    const logins = await this.loginsDataSource.getLogins()
+    const [repository] = await this.getRegisteredRepositories(logins, [candidate])
+    if (!repository || this.isHidden(repository)) return undefined
+    return {
+      repository: { owner: repository.owner.login, name: repository.name },
+      project: this.mapToSummary(repository)
+    }
+  }
+
   private isHidden(repo: GraphQLProjectListRepository): boolean {
     return this.hiddenRepositories.some(
       hidden => hidden.owner === repo.owner.login && hidden.repository === repo.name
@@ -84,9 +94,12 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     return this.resolveProjectNameCollisions(repos)
   }
 
-  private async getRegisteredRepositories(logins: string[]): Promise<GraphQLProjectListRepository[]> {
+  private async getRegisteredRepositories(
+    logins: string[],
+    candidates?: ProjectDiscoveryRepository[]
+  ): Promise<GraphQLProjectListRepository[]> {
     const registered = dedupeBy(
-      await this.discoveryRepository.getRepositories(),
+      candidates ?? await this.discoveryRepository.getRepositories(),
       repo => `${repo.owner}/${repo.name}`.toLowerCase()
     )
     const knownOwners = new Set(logins.map(login => login.toLowerCase()))
