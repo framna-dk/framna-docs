@@ -47,3 +47,11 @@ CREATE TABLE oauth_tokens
   
   PRIMARY KEY (user_id, provider)
 );
+
+CREATE TABLE project_discovery_repositories
+(
+  owner TEXT NOT NULL,
+  name TEXT NOT NULL,
+
+  PRIMARY KEY (owner, name)
+);
