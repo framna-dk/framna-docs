@@ -10,6 +10,8 @@ const args: Parameters<IOasDiffCalculator["calculateDiff"]> = [
 ]
 const result: DiffResult = { from: baseSha, to: headSha, changes: [] }
 
+afterEach(() => jest.restoreAllMocks())
+
 function setup() {
     let now = 0
     const entries = new Map<string, { data: string; expiresAt: number }>()
@@ -83,17 +85,25 @@ test("It does not cache error results", async () => {
 
 test("It returns the calculation even when cache reads and writes fail", async () => {
     const { calculator, store } = setup()
-    store.get = async () => { throw new Error("Redis unavailable") }
-    store.setExpiring = async () => { throw new Error("Redis unavailable") }
+    const logError = jest.spyOn(console, "error").mockImplementation(() => {})
+    const readError = new Error("Redis read unavailable")
+    const writeError = new Error("Redis write unavailable")
+    store.get = async () => { throw readError }
+    store.setExpiring = async () => { throw writeError }
     expect(await calculator.calculateDiff(...args)).toEqual(result)
+    expect(logError).toHaveBeenCalledTimes(2)
+    expect(logError).toHaveBeenCalledWith("Failed to read cached diff:", readError)
+    expect(logError).toHaveBeenCalledWith("Failed to cache diff:", writeError)
 })
 
 test("It replaces unreadable cached data with a fresh calculation", async () => {
     const { calculator, calculateDiff, store } = setup()
+    const logError = jest.spyOn(console, "error").mockImplementation(() => {})
     const get = store.get.bind(store)
     store.get = async () => "invalid JSON"
     expect(await calculator.calculateDiff(...args)).toEqual(result)
     store.get = get
     expect(await calculator.calculateDiff(...args)).toEqual(result)
     expect(calculateDiff).toHaveBeenCalledTimes(1)
+    expect(logError).toHaveBeenCalledWith("Failed to read cached diff:", expect.any(SyntaxError))
 })

@@ -28,7 +28,8 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
             if (cached !== null) {
                 return JSON.parse(cached) as DiffResult
             }
-        } catch {
+        } catch (error) {
+            console.error("Failed to read cached diff:", error)
             // A cache outage or unreadable entry must not prevent calculation.
         }
 
@@ -36,7 +37,8 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
         if (!result.error) {
             try {
                 await this.config.store.setExpiring(key, JSON.stringify(result), cacheTimeToLiveInSeconds)
-            } catch {
+            } catch (error) {
+                console.error("Failed to cache diff:", error)
                 // The calculated result is still usable if caching fails.
             }
         }
