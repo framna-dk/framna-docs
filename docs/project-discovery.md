@@ -7,6 +7,14 @@ and repositories must meet the existing suffix or configuration-file opt-in rule
 Public repositories are included only for the user's own account or organizations,
 matching automatic discovery. Hidden repositories remain excluded.
 
+Users can open **+ Add project → Existing project** to see the discovery rules and
+fast-track a repository by entering its GitHub URL or `owner/repository`. The server
+checks their access and the repository's configuration before adding it to the list.
+Fast-track discovery is available only for repositories without the configured name
+suffix; suffixed repositories use automatic discovery.
+The project then appears in the sidebar and opens immediately. **Create a new
+project** is a separate tab for creating a repository from the template.
+
 For an existing installation, apply the migration to the application's PostgreSQL
 database before deploying this change:
 
@@ -16,7 +24,7 @@ psql -v ON_ERROR_STOP=1 -f migrations/001-project-discovery-repositories.sql
 
 Fresh installations create the table through `create-tables.sql`.
 
-Add a candidate by its GitHub owner and repository name:
+Operators can also add a candidate directly by its GitHub owner and repository name:
 
 ```sql
 INSERT INTO project_discovery_repositories (owner, name)

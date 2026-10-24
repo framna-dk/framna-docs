@@ -13,13 +13,30 @@ export default function ProjectListContextProvider({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const isRefreshingRef = useRef(false)
+  const addedProjectVersionRef = useRef(0)
+  const addedProjectsRef = useRef(new Map<string, { project: ProjectSummary; version: number }>())
+
+  const addProject = useCallback((project: ProjectSummary) => {
+    addedProjectsRef.current.set(project.id, { project, version: ++addedProjectVersionRef.current })
+    setProjects(current => [...current.filter(item => item.id !== project.id), project]
+      .sort((a, b) => a.displayName.localeCompare(b.displayName)))
+    setError(null)
+  }, [])
 
   const fetchProjects = useCallback(async (forceRefresh: boolean): Promise<ProjectSummary[] | null> => {
+    const versionAtStart = addedProjectVersionRef.current
     const url = forceRefresh ? "/api/projects?refresh=true" : "/api/projects"
     const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const { projects: newProjects } = await res.json()
-    setProjects(newProjects || [])
+    const merged = new Map<string, ProjectSummary>((newProjects || []).map((project: ProjectSummary) => [project.id, project]))
+    addedProjectsRef.current.forEach(({ project, version }, id) => {
+      // Keep a just-added project if a request started before registration completed.
+      // Later refreshes are authoritative, including changes to GitHub access.
+      if (merged.has(id) || version <= versionAtStart) addedProjectsRef.current.delete(id)
+      else merged.set(id, project)
+    })
+    setProjects(Array.from(merged.values()).sort((a, b) => a.displayName.localeCompare(b.displayName)))
     setError(null)
     return newProjects || []
   }, [])
@@ -64,7 +81,7 @@ export default function ProjectListContextProvider({
   }, [refresh])
 
   return (
-    <ProjectListContext.Provider value={{ projects, loading, error, refresh }}>
+    <ProjectListContext.Provider value={{ projects, loading, error, refresh, addProject }}>
       {children}
     </ProjectListContext.Provider>
   )

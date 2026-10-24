@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
-import { session, projectListDataSource } from "@/composition"
+import { session, projectListDataSource, registerProject } from "@/composition"
 import { makeUnauthenticatedAPIErrorResponse } from "@/common"
+import createRegisterProjectHandler from "@/features/new-project/data/createRegisterProjectHandler"
+
+export const POST = createRegisterProjectHandler({ session, registration: registerProject })
 
 export async function GET(request: NextRequest) {
   const isAuthenticated = await session.getIsAuthenticated()

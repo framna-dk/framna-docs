@@ -11,4 +11,11 @@ export default class PostgresProjectDiscoveryRepository implements IProjectDisco
     )
     return result.rows
   }
+
+  async add(repository: ProjectDiscoveryRepository): Promise<void> {
+    await this.db.query(
+      "INSERT INTO project_discovery_repositories (owner, name) VALUES ($1, $2) ON CONFLICT (owner, name) DO NOTHING",
+      [repository.owner.toLowerCase(), repository.name.toLowerCase()]
+    )
+  }
 }

@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic'
 
 const HELP_URL = env.get("FRAMNA_DOCS_HELP_URL")
 
-const NewProjectSteps = dynamic(() => import("@/features/new-project/view/NewProjectSteps"))
+const AddProjectOptions = dynamic(() => import("@/features/new-project/view/AddProjectOptions"))
 
 const Page = () => {
   const repositoryNameSuffix = env.getOrThrow("REPOSITORY_NAME_SUFFIX")
@@ -15,17 +15,19 @@ const Page = () => {
     <Box
       display="flex"
       alignItems="center"
-      justifyContent="center"
+      justifyContent="flex-start"
       flexDirection="column"
       height={1}
       width={1}
-      gap={6}
+      gap={4}
+      sx={{ p: { xs: 3, md: 5 }, overflowY: "auto", scrollbarGutter: "stable", "& > *": { flexShrink: 0 } }}
     >
       <Typography variant="h4">
-        Add a new project
+        Add project
       </Typography>
-      <NewProjectSteps 
+      <AddProjectOptions
         repositoryNameSuffix={repositoryNameSuffix}
+        projectConfigurationFilename={env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME")}
         templateName={templateName}
         ownerRepository={ownerRepository}
       />

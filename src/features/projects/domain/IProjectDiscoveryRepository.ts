@@ -5,4 +5,5 @@ export type ProjectDiscoveryRepository = {
 
 export default interface IProjectDiscoveryRepository {
   getRepositories(): Promise<ProjectDiscoveryRepository[]>
+  add(repository: ProjectDiscoveryRepository): Promise<void>
 }

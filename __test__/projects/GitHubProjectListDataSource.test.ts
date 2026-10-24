@@ -39,7 +39,7 @@ const createSut = (overrides: {
     loginsDataSource: overrides.loginsDataSource || createMockLoginsDataSource(),
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
     codeSearchDataSource: overrides.codeSearchDataSource || createMockCodeSearchDataSource(),
-    discoveryRepository: overrides.discoveryRepository || { getRepositories: async () => [] },
+    discoveryRepository: overrides.discoveryRepository || { getRepositories: async () => [], add: async () => {} },
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     hiddenRepositories: overrides.hiddenRepositories || []
@@ -579,7 +579,7 @@ describe("GitHubProjectListDataSource", () => {
       })
       const sut = createSut({
         graphQlClient: { graphql },
-        discoveryRepository: { getRepositories: async () => options.registered },
+        discoveryRepository: { getRepositories: async () => options.registered, add: async () => {} },
         loginsDataSource: createMockLoginsDataSource(options.logins),
         hiddenRepositories: options.hiddenRepositories,
         codeSearchDataSource: createMockCodeSearchDataSource(options.codeSearchRepos)
