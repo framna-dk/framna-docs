@@ -1,4 +1,5 @@
 import type { IKeyValueStore } from "@/common/key-value-store"
+import type IGitHubClient from "@/common/github/IGitHubClient"
 import type { DiffResult, IOasDiffCalculator } from "./IOasDiffCalculator"
 
 const cacheTimeToLiveInSeconds = 7 * 24 * 60 * 60
@@ -8,6 +9,7 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
     constructor(private readonly config: {
         calculator: IOasDiffCalculator
         store: IKeyValueStore
+        gitHubClient: Pick<IGitHubClient, "getRepositoryContent">
     }) {}
 
     async calculateDiff(
@@ -17,6 +19,15 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
         baseRefOid: string,
         toRef: string
     ): Promise<DiffResult> {
+        // Always authorize with the current user's credentials, even on cache hits.
+        // Keep this outside cache-error recovery so revoked access fails closed.
+        await this.config.gitHubClient.getRepositoryContent({
+            repositoryOwner: owner,
+            repositoryName: repository,
+            path,
+            ref: toRef
+        })
+
         // Mutable refs must not reuse a result after their branch moves.
         if (!commitShaPattern.test(baseRefOid) || !commitShaPattern.test(toRef)) {
             return this.config.calculator.calculateDiff(owner, repository, path, baseRefOid, toRef)
@@ -26,7 +37,10 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
         try {
             const cached = await this.config.store.get(key)
             if (cached !== null) {
-                return JSON.parse(cached) as DiffResult
+                const result = JSON.parse(cached) as DiffResult
+                if (!result.error && !result.isNewFile) {
+                    return result
+                }
             }
         } catch (error) {
             console.error("Failed to read cached diff:", error)
@@ -34,7 +48,8 @@ export class CachingOasDiffCalculator implements IOasDiffCalculator {
         }
 
         const result = await this.config.calculator.calculateDiff(owner, repository, path, baseRefOid, toRef)
-        if (!result.error) {
+        // New-file results may represent transient failures fetching the base spec.
+        if (!result.error && !result.isNewFile) {
             try {
                 await this.config.store.setExpiring(key, JSON.stringify(result), cacheTimeToLiveInSeconds)
             } catch (error) {

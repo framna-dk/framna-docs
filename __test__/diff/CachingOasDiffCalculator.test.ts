@@ -1,5 +1,6 @@
 import { jest } from "@jest/globals"
 import type { IKeyValueStore } from "@/common/key-value-store"
+import type IGitHubClient from "@/common/github/IGitHubClient"
 import { CachingOasDiffCalculator } from "@/features/diff/data/CachingOasDiffCalculator"
 import type { DiffResult, IOasDiffCalculator } from "@/features/diff/data/IOasDiffCalculator"
 
@@ -27,8 +28,12 @@ function setup() {
         async delete(key) { entries.delete(key) }
     }
     const calculateDiff = jest.fn<IOasDiffCalculator["calculateDiff"]>().mockResolvedValue(result)
-    const calculator = new CachingOasDiffCalculator({ calculator: { calculateDiff }, store })
-    return { calculator, calculateDiff, store, advance: (seconds: number) => { now += seconds } }
+    const getRepositoryContent = jest.fn<IGitHubClient["getRepositoryContent"]>()
+        .mockResolvedValue({ downloadURL: "https://example.com/openapi.yaml" })
+    const calculator = new CachingOasDiffCalculator({
+        calculator: { calculateDiff }, store, gitHubClient: { getRepositoryContent }
+    })
+    return { calculator, calculateDiff, getRepositoryContent, store, advance: (seconds: number) => { now += seconds } }
 }
 
 test("It reuses cached results, including empty diffs, until the seven-day expiry", async () => {
@@ -81,6 +86,52 @@ test("It does not cache error results", async () => {
     await calculator.calculateDiff(...args)
     expect(await calculator.calculateDiff(...args)).toEqual(result)
     expect(calculateDiff).toHaveBeenCalledTimes(2)
+})
+
+test("It rechecks current-user access before each cache hit and denies revoked access", async () => {
+    const { calculator, calculateDiff, getRepositoryContent, store } = setup()
+    const readCache = jest.spyOn(store, "get")
+    await calculator.calculateDiff(...args)
+    expect(await calculator.calculateDiff(...args)).toEqual(result)
+    expect(calculateDiff).toHaveBeenCalledTimes(1)
+    expect(getRepositoryContent).toHaveBeenCalledTimes(2)
+    expect(getRepositoryContent).toHaveBeenLastCalledWith({
+        repositoryOwner: args[0], repositoryName: args[1], path: args[2], ref: headSha
+    })
+
+    getRepositoryContent.mockRejectedValueOnce(new Error("Access revoked"))
+    await expect(calculator.calculateDiff(...args)).rejects.toThrow("Access revoked")
+    expect(readCache).toHaveBeenCalledTimes(2)
+    expect(calculateDiff).toHaveBeenCalledTimes(1)
+})
+
+test("It denies unauthorized requests on cache misses and mutable refs", async () => {
+    const { calculator, calculateDiff, getRepositoryContent, store } = setup()
+    const readCache = jest.spyOn(store, "get")
+    getRepositoryContent.mockRejectedValue(new Error("Forbidden"))
+    await expect(calculator.calculateDiff(...args)).rejects.toThrow("Forbidden")
+    await expect(calculator.calculateDiff(args[0], args[1], args[2], baseSha, "feature/update"))
+        .rejects.toThrow("Forbidden")
+    expect(readCache).not.toHaveBeenCalled()
+    expect(calculateDiff).not.toHaveBeenCalled()
+})
+
+test("It retries new-file results so transient base fetch failures can recover", async () => {
+    const { calculator, calculateDiff, store } = setup()
+    const writeCache = jest.spyOn(store, "setExpiring")
+    calculateDiff.mockResolvedValueOnce({ ...result, isNewFile: true })
+    expect(await calculator.calculateDiff(...args)).toEqual({ ...result, isNewFile: true })
+    expect(writeCache).not.toHaveBeenCalled()
+    expect(await calculator.calculateDiff(...args)).toEqual(result)
+    expect(await calculator.calculateDiff(...args)).toEqual(result)
+    expect(calculateDiff).toHaveBeenCalledTimes(2)
+})
+
+test("It discards previously cached new-file results", async () => {
+    const { calculator, calculateDiff, store } = setup()
+    store.get = async () => JSON.stringify({ ...result, isNewFile: true })
+    expect(await calculator.calculateDiff(...args)).toEqual(result)
+    expect(calculateDiff).toHaveBeenCalledTimes(1)
 })
 
 test("It returns the calculation even when cache reads and writes fail", async () => {

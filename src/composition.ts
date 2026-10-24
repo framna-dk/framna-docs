@@ -249,6 +249,7 @@ export const gitHubHookHandler = new GitHubHookHandler({
 })
 
 export const diffCalculator: IOasDiffCalculator = new CachingOasDiffCalculator({
-  calculator: new OasDiffCalculator(gitHubClient),
+  calculator: new OasDiffCalculator(userGitHubClient),
+  gitHubClient: userGitHubClient,
   store: new RedisKeyValueStore(env.getOrThrow("REDIS_URL"))
 })
