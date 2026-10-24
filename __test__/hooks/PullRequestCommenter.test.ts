@@ -1,4 +1,82 @@
 import { PullRequestCommenter } from "@/features/hooks/domain"
+import { jest } from "@jest/globals"
+import type { IGitHubClient, PullRequestFile } from "@/common"
+
+function configuredCommenter(config: { text?: string; variant?: "configYml" | "configYaml"; files: PullRequestFile[]; existingBody?: string }) {
+  const client = {
+    graphql: jest.fn<IGitHubClient["graphql"]>().mockResolvedValue({
+      repository: config.text === undefined ? {} : { [config.variant ?? "configYml"]: { text: config.text } }
+    }),
+    getPullRequestFiles: jest.fn<IGitHubClient["getPullRequestFiles"]>().mockResolvedValue(config.files),
+    getPullRequestComments: jest.fn<IGitHubClient["getPullRequestComments"]>().mockResolvedValue(
+      config.existingBody === undefined ? [] : [{ id: 17, body: config.existingBody, isFromBot: true, gitHubApp: { id: "appid1234" } }]
+    ),
+    addCommentToPullRequest: jest.fn<IGitHubClient["addCommentToPullRequest"]>(),
+    updatePullRequestComment: jest.fn<IGitHubClient["updatePullRequestComment"]>(),
+    getRepositoryContent: jest.fn<IGitHubClient["getRepositoryContent"]>(),
+    compareCommitsWithBasehead: jest.fn<IGitHubClient["compareCommitsWithBasehead"]>(),
+    searchCode: jest.fn<IGitHubClient["searchCode"]>()
+  }
+  const sut = new PullRequestCommenter({
+    domain: "https://example.com", siteName: "Demo Docs", repositoryNameSuffix: "-openapi",
+    projectConfigurationFilename: ".demo-docs.yml", gitHubAppId: "appid1234", gitHubClient: client
+  })
+  const request = { appInstallationId: 1234, pullRequestNumber: 42, repositoryOwner: "acme", repositoryName: "aurora", ref: "feature/api" }
+  return { sut, client, request }
+}
+
+test.each(["configYml", "configYaml"] as const)("It comments on configured nested specs in a bare repository using %s", async variant => {
+  const { sut, client, request } = configuredCommenter({
+    variant,
+    text: "specifications:\n  - path: services/user/openapi.yaml\n  - path: services/orders/api.json",
+    files: [
+      { filename: "services/user/openapi.yaml", status: "modified" },
+      { filename: "services/orders/api.json", status: "added" },
+      { filename: "services/other/openapi.yaml", status: "modified" },
+      { filename: ".github/workflows/build.yml", status: "modified" },
+      { filename: "unrelated.yml", status: "modified" }
+    ]
+  })
+  await sut.commentPullRequest(request)
+  expect(client.graphql).toHaveBeenCalledWith(expect.objectContaining({ appInstallationId: 1234 }))
+  const body = client.addCommentToPullRequest.mock.calls[0][0].body
+  expect(body).toContain("https://example.com/acme/aurora/feature/api/services%2Fuser%2Fopenapi.yaml")
+  expect(body).toContain("services%2Forders%2Fapi.json")
+  expect(body).not.toContain("services/other")
+  expect(body).not.toContain("build.yml")
+  expect(body).not.toContain("unrelated.yml")
+})
+
+test("It skips bare repositories without configuration", async () => {
+  const { sut, client, request } = configuredCommenter({ files: [{ filename: "api.yml", status: "modified" }] })
+  await sut.commentPullRequest(request)
+  expect(client.getPullRequestFiles).not.toHaveBeenCalled()
+  expect(client.addCommentToPullRequest).not.toHaveBeenCalled()
+})
+
+test("It skips comments for unrelated files when specs are configured", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "other.yml", status: "modified" }]
+  })
+  await sut.commentPullRequest(request)
+  expect(client.addCommentToPullRequest).not.toHaveBeenCalled()
+})
+
+test("It updates existing comments and shows removed configured specs without a preview link", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "services/user/openapi.yaml", status: "removed" }],
+    existingBody: "old comment"
+  })
+  await sut.commentPullRequest(request)
+  const update = client.updatePullRequestComment.mock.calls[0][0]
+  expect(update.commentId).toBe(17)
+  expect(update.body).toContain("services/user/openapi.yaml")
+  expect(update.body).toContain("Removed")
+  expect(update.body).not.toContain(">Preview</a>")
+  expect(client.addCommentToPullRequest).not.toHaveBeenCalled()
+})
 
 test("It adds comment when none exist", async () => {
   let didAddComment = false

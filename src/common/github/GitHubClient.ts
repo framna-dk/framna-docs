@@ -50,8 +50,10 @@ export default class GitHubClient implements IGitHubClient {
   }
 
   async graphql(request: GraphQLQueryRequest): Promise<GraphQlQueryResponse> {
-    const oauthToken = await this.oauthTokenDataSource.getOAuthToken()
-    const octokit = new Octokit({ auth: oauthToken.accessToken })
+    const token = request.appInstallationId !== undefined
+      ? (await this.installationAuthenticator(request.appInstallationId)).token
+      : (await this.oauthTokenDataSource.getOAuthToken()).accessToken
+    const octokit = new Octokit({ auth: token })
     return await octokit.graphql(request.query, request.variables)
   }
 

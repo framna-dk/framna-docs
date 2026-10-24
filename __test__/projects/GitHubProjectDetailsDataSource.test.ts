@@ -1,4 +1,5 @@
 import { jest } from "@jest/globals"
+import type { IGitHubClient } from "@/common"
 import { GitHubProjectDetailsDataSource } from "@/features/projects/data"
 import { IGitHubGraphQLClient } from "@/features/projects/domain"
 import { IEncryptionService } from "@/features/encrypt/EncryptionService"
@@ -37,6 +38,7 @@ const createMockRemoteConfigEncoder = (): IRemoteConfigEncoder => ({
 
 const createSut = (overrides: {
   graphQlClient?: IGitHubGraphQLClient
+  commitComparer?: Pick<IGitHubClient, "compareCommitsWithBasehead">
   repositoryNameSuffix?: string
   projectConfigurationFilename?: string
   encryptionService?: IEncryptionService
@@ -44,6 +46,7 @@ const createSut = (overrides: {
 } = {}) => {
   return new GitHubProjectDetailsDataSource({
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
+    commitComparer: overrides.commitComparer || { compareCommitsWithBasehead: async () => ({ mergeBaseSha: "merge123" }) },
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     encryptionService: overrides.encryptionService || createMockEncryptionService(),
@@ -552,13 +555,14 @@ specifications:
           graphql: jest.fn<() => Promise<unknown>>()
             .mockResolvedValueOnce(phase1Response)
             .mockResolvedValueOnce(phase2Response)
+            .mockResolvedValueOnce({ repository: { r0s0: { oid: "old" }, r1s0: { oid: "new" } } })
         }
         const sut = createSut({ graphQlClient })
 
         const result = await sut.getProjectDetails("acme", "my-project")
         const spec = result!.versions[0].specifications[0]
 
-        expect(spec.diffURL).toBeDefined()
+        expect(spec.diffURL).toBe("/api/diff/acme/my-project-openapi/services%2Fuser%2Fopenapi.yaml?baseRefOid=base123&to=feat123")
         expect(spec.diffBaseBranch).toBe("main")
       })
 
@@ -569,6 +573,47 @@ specifications:
         await sut.getProjectDetails("acme", "my-project")
 
         expect(graphQlClient.graphql).toHaveBeenCalledTimes(1)
+      })
+
+      test.each([
+        { name: "modified", base: { oid: "before" }, head: { oid: "after" }, changed: true },
+        { name: "added", base: null, head: { oid: "after" }, changed: true },
+        { name: "unchanged", base: { oid: "same" }, head: { oid: "same" }, changed: false }
+      ])("It checks the configured $name spec independently of the PR file list", async ({ base, head, changed }) => {
+        const specPath = "services/user/openapi.yaml"
+        const phase1 = createRepositoryResponse({
+          name: "aurora",
+          configYml: { text: `specifications:\n  - path: ${specPath}\n  - path: services/orders/api.yaml` },
+          branches: [{ name: "feature", target: { oid: "head123", tree: { entries: [] } } }],
+          pullRequests: [{
+            number: 42, headRefName: "feature", baseRefName: "main", baseRefOid: "base-tip",
+            files: { nodes: Array.from({ length: 100 }, (_, i) => ({ path: `src/file-${i}.ts` })) }
+          }]
+        })
+        const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>()
+          .mockResolvedValueOnce(phase1)
+          .mockResolvedValueOnce({ repository: { r0s0: head, r0s1: { oid: "orders" } } })
+          .mockResolvedValueOnce({ repository: {
+            r0s0: base, r0s1: { oid: "orders" },
+            r1s0: head, r1s1: { oid: "orders" }
+          } })
+        const compareCommitsWithBasehead = jest.fn<IGitHubClient["compareCommitsWithBasehead"]>()
+          .mockResolvedValue({ mergeBaseSha: "merge-base" })
+        const sut = createSut({ graphQlClient: { graphql }, commitComparer: { compareCommitsWithBasehead } })
+
+        const project = await sut.getProjectDetails("acme", "aurora")
+        const [orders, user] = project!.versions[0].specifications
+
+        expect(Boolean(user.diffURL)).toBe(changed)
+        expect(orders.diffURL).toBeUndefined()
+        expect(compareCommitsWithBasehead).toHaveBeenCalledWith({
+          repositoryOwner: "acme", repositoryName: "aurora", baseRefOid: "base-tip", headRefOid: "head123"
+        })
+        const query = graphql.mock.calls[2][0].query
+        expect(query).toContain(`merge-base:${specPath}`)
+        expect(query).toContain(`head123:${specPath}`)
+        expect(query).not.toContain("base-tip:")
+        expect(query).not.toContain("src/file-")
       })
     })
   })
