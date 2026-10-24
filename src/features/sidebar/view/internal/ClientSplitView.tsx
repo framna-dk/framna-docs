@@ -27,6 +27,7 @@ const ClientSplitView = ({
   const [isSidebarOpen, setSidebarOpen] = useSidebarOpen()
   const [isRightSidebarOpen, setRightSidebarOpen] = useDiffbarOpen()
   const { specification } = useProjectSelection()
+  const diffUrl = specification?.diffURL
   const isSidebarTogglable = useContext(SidebarTogglableContext)
   const theme = useTheme()
   // Determine if the screen size is small or larger
@@ -37,6 +38,13 @@ const ClientSplitView = ({
       setSidebarOpen(true)
     }
   }, [isSidebarOpen, isSidebarTogglable, setSidebarOpen])
+
+  // Match the changes pane to the selected specification when navigating.
+  useEffect(() => {
+    if (isDiffFeatureEnabled) {
+      setRightSidebarOpen(Boolean(diffUrl))
+    }
+  }, [diffUrl, setRightSidebarOpen])
 
   // Close diff sidebar if no specification is selected
   useEffect(() => {
