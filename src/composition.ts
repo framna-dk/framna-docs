@@ -214,6 +214,7 @@ export const projectListDataSource = new CachingProjectListDataSource({
 
 export const projectDetailsDataSource = new GitHubProjectDetailsDataSource({
   graphQlClient: userGitHubClient,
+  commitComparer: userGitHubClient,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   encryptionService: encryptionService,
@@ -231,7 +232,6 @@ export const gitHubHookHandler = new GitHubHookHandler({
   secret: env.getOrThrow("GITHUB_WEBHOOK_SECRET"),
   pullRequestEventHandler: new FilteringPullRequestEventHandler({
     filter: new RepositoryNameEventFilter({
-      repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
       allowlist: listFromCommaSeparatedString(env.get("GITHUB_WEBHOK_REPOSITORY_ALLOWLIST")),
       disallowlist: listFromCommaSeparatedString(env.get("GITHUB_WEBHOK_REPOSITORY_DISALLOWLIST"))
     }),

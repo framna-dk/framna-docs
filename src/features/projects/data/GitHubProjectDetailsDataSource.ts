@@ -1,5 +1,5 @@
 import { createHash } from "crypto"
-import { ProjectRepositoryNaming } from "@/common"
+import { IGitHubClient, ProjectRepositoryNaming } from "@/common"
 import { IEncryptionService } from "@/features/encrypt/EncryptionService"
 import {
   Project,
@@ -56,15 +56,18 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
   private readonly naming: ProjectRepositoryNaming
   private readonly encryptionService: IEncryptionService
   private readonly remoteConfigEncoder: IRemoteConfigEncoder
+  private readonly commitComparer: Pick<IGitHubClient, "compareCommitsWithBasehead">
 
   constructor(config: {
     graphQlClient: IGitHubGraphQLClient
+    commitComparer: Pick<IGitHubClient, "compareCommitsWithBasehead">
     repositoryNameSuffix: string
     projectConfigurationFilename: string
     encryptionService: IEncryptionService
     remoteConfigEncoder: IRemoteConfigEncoder
   }) {
     this.graphQlClient = config.graphQlClient
+    this.commitComparer = config.commitComparer
     this.naming = new ProjectRepositoryNaming(config)
     this.encryptionService = config.encryptionService
     this.remoteConfigEncoder = config.remoteConfigEncoder
@@ -220,13 +223,17 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
       config?.specifications
     )
 
+    const pullRequests = config?.specifications?.length
+      ? await this.findConfiguredSpecChanges(data.owner, data.name, data.branches, data.pullRequests, config.specifications)
+      : data.pullRequests
+
     const branchVersions = data.branches.map(branch =>
       this.mapVersion({
         owner: data.owner,
         repoName: data.name,
         ref: branch,
         isDefault: branch.name === data.defaultBranchRef.name,
-        pr: data.pullRequests.get(branch.name),
+        pr: pullRequests.get(branch.name),
         specifications: specificationsForRef(branch)
       })
     )
@@ -275,24 +282,56 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
         .filter(f => this.isOpenAPISpec(f.name))
         .map(f => ({ path: f.name }))
     }
-    const existenceByRefName = await this.fetchSpecExistence(
+    const blobsByRefName = await this.fetchSpecBlobs(
       owner,
       repoName,
       refs.map(ref => ({ name: ref.name, oid: ref.target.oid })),
       configSpecs
     )
     return ref => {
-      const existingPaths = existenceByRefName.get(ref.name) ?? []
-      return configSpecs.filter(spec => existingPaths.includes(spec.path))
+      const existingPaths = blobsByRefName.get(ref.name)
+      return configSpecs.filter(spec => existingPaths?.has(spec.path))
     }
   }
 
-  private async fetchSpecExistence(
+  private async findConfiguredSpecChanges(
+    owner: string,
+    repoName: string,
+    branches: GraphQLRef[],
+    pullRequests: Map<string, PullRequestInfo>,
+    specs: ProjectConfigSpecification[]
+  ): Promise<Map<string, PullRequestInfo>> {
+    const comparisons = await Promise.all(branches.map(async branch => {
+      const pr = pullRequests.get(branch.name)
+      if (!pr) return undefined
+      const { mergeBaseSha } = await this.commitComparer.compareCommitsWithBasehead({
+        repositoryOwner: owner,
+        repositoryName: repoName,
+        baseRefOid: pr.baseRefOid,
+        headRefOid: branch.target.oid
+      })
+      return { branch, pr, mergeBaseSha }
+    }))
+    const requests = comparisons.filter(comparison => comparison !== undefined)
+    // Batch only the configured paths, regardless of how many other files the PRs change.
+    const blobs = await this.fetchSpecBlobs(owner, repoName, requests.flatMap(({ branch, mergeBaseSha }, i) => [
+      { name: `base${i}`, oid: mergeBaseSha },
+      { name: `head${i}`, oid: branch.target.oid }
+    ]), specs)
+    return new Map(requests.map(({ branch, pr }, i) => {
+      const changedFiles = specs.filter(spec =>
+        blobs.get(`base${i}`)?.get(spec.path) !== blobs.get(`head${i}`)?.get(spec.path)
+      ).map(spec => spec.path)
+      return [branch.name, { ...pr, changedFiles }] as const
+    }))
+  }
+
+  private async fetchSpecBlobs(
     owner: string,
     repoName: string,
     refs: Array<{ name: string; oid: string }>,
     specs: ProjectConfigSpecification[]
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Map<string, Map<string, string>>> {
     if (refs.length === 0 || specs.length === 0) return new Map()
 
     const refsPerQuery = Math.max(1, Math.floor(MAX_SPEC_EXISTENCE_ALIASES_PER_QUERY / specs.length))
@@ -302,21 +341,21 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     }
 
     const chunkResults = await Promise.all(
-      chunks.map(chunk => this.fetchSpecExistenceChunk(owner, repoName, chunk, specs))
+      chunks.map(chunk => this.fetchSpecBlobsChunk(owner, repoName, chunk, specs))
     )
-    const merged = new Map<string, string[]>()
+    const merged = new Map<string, Map<string, string>>()
     for (const chunkResult of chunkResults) {
       chunkResult.forEach((paths, refName) => merged.set(refName, paths))
     }
     return merged
   }
 
-  private async fetchSpecExistenceChunk(
+  private async fetchSpecBlobsChunk(
     owner: string,
     repoName: string,
     refs: Array<{ name: string; oid: string }>,
     specs: ProjectConfigSpecification[]
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Map<string, Map<string, string>>> {
     const aliases = refs.flatMap((ref, ri) =>
       specs.map((spec, si) =>
         `r${ri}s${si}: object(expression: ${JSON.stringify(`${ref.oid}:${spec.path}`)}) { ... on Blob { oid } }`
@@ -333,13 +372,13 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
 
     const response = await this.graphQlClient.graphql({ query, variables: { owner, name: repoName } })
 
-    const result = new Map<string, string[]>()
+    const result = new Map<string, Map<string, string>>()
     refs.forEach((ref, ri) => {
-      const existingPaths: string[] = []
+      const existingPaths = new Map<string, string>()
       specs.forEach((spec, si) => {
         const alias = `r${ri}s${si}`
         if (response.repository?.[alias] != null) {
-          existingPaths.push(spec.path)
+          existingPaths.set(spec.path, response.repository[alias].oid)
         }
       })
       result.set(ref.name, existingPaths)
