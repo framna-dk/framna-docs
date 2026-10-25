@@ -5,7 +5,7 @@ import createRegisterProjectHandler from "@/features/new-project/data/createRegi
 import type { ProjectSummary } from "@/features/projects/domain"
 
 const project: ProjectSummary = {
-  id: "acme-aurora", name: "aurora", displayName: "Aurora API", owner: "acme",
+  id: "repo:acme/aurora", name: "aurora", path: "/repos/acme/aurora", displayName: "Aurora API", owner: "acme",
   ownerUrl: "https://github.com/acme"
 }
 

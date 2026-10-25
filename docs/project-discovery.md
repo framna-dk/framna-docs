@@ -15,6 +15,10 @@ suffix; suffixed repositories use automatic discovery.
 The project then appears in the sidebar and opens immediately. **Create a new
 project** is a separate tab for creating a repository from the template.
 
+Configured repositories open at `/repos/{owner}/{repository}`. This keeps them
+distinct from legacy suffixed documentation repositories, even if both share the
+same project name. See [project routes](project-routes.md) for the URL conventions.
+
 For an existing installation, apply the migration to the application's PostgreSQL
 database before deploying this change:
 

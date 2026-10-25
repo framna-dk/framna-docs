@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Alert, Box, Button, TextField, Typography } from "@mui/material"
 import { useProjectList } from "@/features/projects/view/ProjectListContext"
+import { getProjectPath } from "@/features/projects/domain"
 
 export default function ExistingProjectForm() {
   const router = useRouter()
@@ -26,7 +27,7 @@ export default function ExistingProjectForm() {
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || "We couldn't add the project. Please try again.")
       addProject(result.project)
-      router.push(`/${encodeURIComponent(result.project.owner)}/${encodeURIComponent(result.project.name)}`)
+      router.push(getProjectPath(result.project))
     } catch (error) {
       setError(error instanceof Error ? error.message : "We couldn't add the project. Please try again.")
       setSubmitting(false)
