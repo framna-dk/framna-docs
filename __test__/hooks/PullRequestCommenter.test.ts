@@ -78,6 +78,54 @@ test("It updates existing comments and shows removed configured specs without a 
   expect(client.addCommentToPullRequest).not.toHaveBeenCalled()
 })
 
+test.each(["archive/openapi.yaml", "archive/spec.txt"])("It reports the configured source as removed when renamed to %s", async filename => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename, previousFilename: "services/user/openapi.yaml", status: "renamed" }]
+  })
+  await sut.commentPullRequest(request)
+  const body = client.addCommentToPullRequest.mock.calls[0][0].body
+  expect(body).toContain("<tr><td><strong>services/user/openapi.yaml</strong></td><td>Removed</td><td></td></tr>")
+  expect(body).not.toContain(filename)
+  expect(body).not.toContain(">Preview</a>")
+})
+
+test("It reports both the removed source and previewable destination when both paths are configured", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml\n  - path: services/accounts/openapi.yaml",
+    files: [{ filename: "services/accounts/openapi.yaml", previousFilename: "services/user/openapi.yaml", status: "renamed" }],
+    existingBody: "previous preview"
+  })
+  await sut.commentPullRequest(request)
+  const body = client.updatePullRequestComment.mock.calls[0][0].body
+  expect(body).toContain("<tr><td><strong>services/user/openapi.yaml</strong></td><td>Removed</td><td></td></tr>")
+  expect(body).toContain("<strong>services/accounts/openapi.yaml</strong></td><td>Renamed</td>")
+  expect(body).toContain("/services%2Faccounts%2Fopenapi.yaml\">Preview</a>")
+  expect(body).not.toContain("/services%2Fuser%2Fopenapi.yaml\">Preview</a>")
+})
+
+test("It previews a renamed configured destination without reporting an unconfigured source", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "services/user/openapi.yaml", previousFilename: "archive/openapi.yaml", status: "renamed" }]
+  })
+  await sut.commentPullRequest(request)
+  const body = client.addCommentToPullRequest.mock.calls[0][0].body
+  expect(body).toContain("Renamed")
+  expect(body).toContain("/services%2Fuser%2Fopenapi.yaml\">Preview</a>")
+  expect(body).not.toContain("archive/openapi.yaml")
+  expect(body).not.toContain("Removed")
+})
+
+test("It does not report a removal for a copied configured source", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "archive/openapi.yaml", previousFilename: "services/user/openapi.yaml", status: "copied" }]
+  })
+  await sut.commentPullRequest(request)
+  expect(client.addCommentToPullRequest).not.toHaveBeenCalled()
+})
+
 test("It adds comment when none exist", async () => {
   let didAddComment = false
   const sut = new PullRequestCommenter({

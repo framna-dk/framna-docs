@@ -75,13 +75,22 @@ export default class PullRequestCommenter {
   }
   
   private getChangedFiles(files: PullRequestFile[], specifications?: { path: string }[]) {
-    return files
-      .filter(file => file.status != "unchanged")
-      .filter(file => {
-        if (this.isProjectConfigurationFile(file.filename)) return true
-        if (specifications?.length) return specifications.some(spec => spec.path === file.filename)
-        return !file.filename.startsWith(".") && !file.filename.includes("/") && /\.ya?ml$/.test(file.filename)
-      })
+    const isRelevant = (filename: string) => {
+      if (this.isProjectConfigurationFile(filename)) return true
+      if (specifications?.length) return specifications.some(spec => spec.path === filename)
+      return !filename.startsWith(".") && !filename.includes("/") && /\.ya?ml$/.test(filename)
+    }
+    return files.flatMap(file => {
+      if (file.status === "unchanged") return []
+      const result: PullRequestFile[] = []
+      // GitHub reports a rename under the destination path. Preserve removal of
+      // the old spec even if the destination is outside the configured paths.
+      if (file.status === "renamed" && file.previousFilename && file.previousFilename !== file.filename && isRelevant(file.previousFilename)) {
+        result.push({ filename: file.previousFilename, status: "removed" })
+      }
+      if (isRelevant(file.filename)) result.push(file)
+      return result
+    })
   }
   
   private async getExistingComment(request: {

@@ -16,6 +16,7 @@ export type RepositoryContent = {
 
 export type PullRequestFile = {
   readonly filename: string
+  readonly previousFilename?: string
   readonly status: "added"
     | "removed"
     | "modified"

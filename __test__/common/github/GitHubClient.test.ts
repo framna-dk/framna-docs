@@ -4,7 +4,9 @@ import type GitHubClientType from "@/common/github/GitHubClient"
 const graphql = jest.fn<() => Promise<unknown>>().mockResolvedValue({ repository: {} })
 const installationAuth = jest.fn<() => Promise<{ token: string }>>()
   .mockResolvedValue({ token: "installation-token" })
-const octokit = jest.fn().mockImplementation(() => ({ graphql }))
+const listFiles = jest.fn()
+const paginate = jest.fn<() => Promise<unknown[]>>()
+const octokit = jest.fn().mockImplementation(() => ({ graphql, paginate, rest: { pulls: { listFiles } } }))
 
 jest.unstable_mockModule("octokit", () => ({ Octokit: octokit }))
 jest.unstable_mockModule("@octokit/auth-app", () => ({ createAppAuth: () => installationAuth }))
@@ -40,4 +42,20 @@ test("It continues to use the user's token for ordinary GraphQL requests", async
   expect(getOAuthToken).toHaveBeenCalledTimes(1)
   expect(octokit).toHaveBeenCalledWith({ auth: "user-token" })
   expect(installationAuth).not.toHaveBeenCalled()
+})
+
+test("It preserves the original path of renamed pull request files", async () => {
+  paginate.mockResolvedValueOnce([
+    { filename: "archive/openapi.yaml", previous_filename: "services/user/openapi.yaml", status: "renamed" },
+    { filename: "services/orders/openapi.yaml", status: "modified" }
+  ])
+  const { client, getOAuthToken } = createClient()
+  const files = await client.getPullRequestFiles({
+    appInstallationId: 42, repositoryOwner: "acme", repositoryName: "aurora", pullRequestNumber: 7
+  })
+  expect(files).toEqual([
+    { filename: "archive/openapi.yaml", previousFilename: "services/user/openapi.yaml", status: "renamed" },
+    { filename: "services/orders/openapi.yaml", previousFilename: undefined, status: "modified" }
+  ])
+  expect(getOAuthToken).not.toHaveBeenCalled()
 })

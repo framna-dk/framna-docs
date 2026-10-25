@@ -81,7 +81,7 @@ export default class GitHubClient implements IGitHubClient {
       headers: GITHUB_API_VERSION
     })
     return files.map(file => {
-      return { filename: file.filename, status: file.status }
+      return { filename: file.filename, previousFilename: file.previous_filename, status: file.status }
     })
   }
 
