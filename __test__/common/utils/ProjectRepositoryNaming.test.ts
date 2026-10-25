@@ -64,3 +64,11 @@ test("It treats regex characters in the suffix literally", () => {
   expect(sut.projectName("my-projectxdocs")).toBe("my-projectxdocs")
   expect(sut.projectName("my-project.docs")).toBe("my-project")
 })
+
+test("It gives colliding repository names separate paths and identities", () => {
+  const sut = createSut()
+  expect(sut.projectPath("acme", "aurora-openapi")).toBe("/acme/aurora")
+  expect(sut.projectPath("acme", "aurora")).toBe("/repos/acme/aurora")
+  expect(sut.projectId("acme", "aurora-openapi")).toBe("acme-aurora")
+  expect(sut.projectId("acme", "aurora")).toBe("repo:acme/aurora")
+})

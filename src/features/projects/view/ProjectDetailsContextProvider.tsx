@@ -18,26 +18,26 @@ export default function ProjectDetailsContextProvider({
   const [cache, setCache] = useState<Map<string, CacheEntry>>(new Map())
   const inFlightRef = useRef<Map<string, Promise<Project | null>>>(new Map())
 
-  const makeKey = (owner: string, repo: string) => `${owner}/${repo}`
+  const makeKey = (owner: string, repo: string, exactRepository = false) => `${exactRepository ? "repos" : "projects"}/${owner}/${repo}`
 
   // Note: These callbacks intentionally include `cache` in deps to trigger
   // re-renders in consuming components when cache updates
-  const getProject = useCallback((owner: string, repo: string): Project | null | undefined => {
-    const entry = cache.get(makeKey(owner, repo))
+  const getProject = useCallback((owner: string, repo: string, exactRepository = false): Project | null | undefined => {
+    const entry = cache.get(makeKey(owner, repo, exactRepository))
     if (!entry) return undefined  // not yet fetched
     return entry.project           // null = fetched, not found; Project = fetched, found
   }, [cache])
 
-  const isLoading = useCallback((owner: string, repo: string): boolean => {
-    return cache.get(makeKey(owner, repo))?.loading ?? false
+  const isLoading = useCallback((owner: string, repo: string, exactRepository = false): boolean => {
+    return cache.get(makeKey(owner, repo, exactRepository))?.loading ?? false
   }, [cache])
 
-  const getError = useCallback((owner: string, repo: string): string | null => {
-    return cache.get(makeKey(owner, repo))?.error ?? null
+  const getError = useCallback((owner: string, repo: string, exactRepository = false): string | null => {
+    return cache.get(makeKey(owner, repo, exactRepository))?.error ?? null
   }, [cache])
 
-  const fetchProject = useCallback(async (owner: string, repo: string): Promise<Project | null> => {
-    const key = makeKey(owner, repo)
+  const fetchProject = useCallback(async (owner: string, repo: string, exactRepository = false): Promise<Project | null> => {
+    const key = makeKey(owner, repo, exactRepository)
 
     // Return in-flight request if exists
     const inFlight = inFlightRef.current.get(key)
@@ -50,7 +50,7 @@ export default function ProjectDetailsContextProvider({
       return next
     })
 
-    const promise = fetch(`/api/projects/${owner}/${repo}`)
+    const promise = fetch(`/api/projects/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${exactRepository ? "?repository=true" : ""}`)
       .then((res): Promise<{ project: Project | null }> | { project: null } => {
         if (res.status === 404) {
           // Project not found - treat as null project, not an error

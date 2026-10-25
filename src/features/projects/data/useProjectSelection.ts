@@ -8,7 +8,9 @@ import {
   ProjectSummary,
   ProjectNavigator,
   getProjectSelectionFromPath,
-  getDefaultSpecification
+  getDefaultSpecification,
+  getProjectPath,
+  parseProjectRoute
 } from "../domain"
 import { useProjectDetails } from "../view/ProjectDetailsContext"
 
@@ -27,21 +29,19 @@ export default function useProjectSelection() {
   }, [router, pathname])
 
   // Parse owner/name from URL to look up the project
-  const pathParts = pathname.split("/").filter(Boolean)
-  const owner = pathParts[0]
-  const name = pathParts[1]
-  const hasVersionInUrl = pathParts.length >= 3
+  const { owner, name, exactRepository, remainingPath, basePath } = parseProjectRoute(pathname)
+  const hasVersionInUrl = remainingPath.length > 0
 
   // Get project from cache (if loaded).
   // null = fetched but not found; undefined = not yet fetched.
   // Only pass a real Project to the selection logic.
-  const cachedProject = owner && name ? getProject(owner, name) : undefined
+  const cachedProject = owner && name ? getProject(owner, name, exactRepository) : undefined
   const resolvedProject = cachedProject ?? undefined
 
   // Use existing getProjectSelectionFromPath for full selection logic
   // It handles complex cases like version IDs with slashes, remote versions, etc.
   const selection = resolvedProject
-    ? getProjectSelectionFromPath({ projects: [resolvedProject], path: pathname })
+    ? getProjectSelectionFromPath({ projects: [resolvedProject], path: `${getProjectPath(resolvedProject)}${remainingPath}` })
     : { project: undefined, version: undefined, specification: undefined }
 
   const currentProject = selection.project
@@ -56,7 +56,7 @@ export default function useProjectSelection() {
       if (defaultVersion) {
         const defaultSpec = getDefaultSpecification(defaultVersion)
         if (defaultSpec) {
-          router.replace(`/${currentProject.owner}/${currentProject.name}/${encodeURIComponent(defaultVersion.id)}/${encodeURIComponent(defaultSpec.id)}`)
+          router.replace(`${getProjectPath(currentProject)}/${encodeURIComponent(defaultVersion.id)}/${encodeURIComponent(defaultSpec.id)}`)
           return
         }
       }
@@ -65,6 +65,7 @@ export default function useProjectSelection() {
     projectNavigator.navigateIfNeeded({
       projectOwner: currentProject?.owner,
       projectName: currentProject?.name,
+      projectPath: currentProject ? getProjectPath(currentProject) : undefined,
       versionId: currentVersion?.id,
       specificationId: currentSpecification?.id
     })
@@ -83,10 +84,11 @@ export default function useProjectSelection() {
     // Immediate selection from URL - doesn't require project details to be loaded
     selectedOwner: owner,
     selectedName: name,
+    selectedProjectPath: currentProject ? getProjectPath(currentProject) : basePath,
     selectProject: (project: ProjectSummary | Project) => {
       NProgress.start()
       // Navigate to project base - the page will handle loading details and redirecting
-      router.push(`/${project.owner}/${project.name}`)
+      router.push(getProjectPath(project))
     },
     selectVersion: (versionId: string) => {
       if (!currentProject || !currentSpecification) return
@@ -104,7 +106,8 @@ export default function useProjectSelection() {
         currentProject.owner,
         currentProject.name,
         currentVersion.id,
-        specificationId
+        specificationId,
+        getProjectPath(currentProject)
       )
     },
     navigateToSelectionIfNeeded

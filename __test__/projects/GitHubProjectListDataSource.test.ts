@@ -504,8 +504,7 @@ describe("GitHubProjectListDataSource", () => {
       expect(result[0].displayName).toBe("Backend Service")
     })
 
-    test("It drops a config-file repo shadowed by a suffixed repo with the same project name", async () => {
-      const consoleWarn = jest.spyOn(console, "warn").mockImplementation(() => {})
+    test("It keeps a configured bare repository and its suffixed counterpart as distinct projects", async () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
@@ -523,9 +522,12 @@ describe("GitHubProjectListDataSource", () => {
 
       const result = await sut.getProjectList()
 
-      expect(result).toHaveLength(1)
-      expect(result[0].url).toBe("https://github.com/acme/polaris-openapi")
-      consoleWarn.mockRestore()
+      expect(result).toHaveLength(2)
+      expect(new Set(result.map(project => project.id)).size).toBe(2)
+      expect(result.map(project => project.path).sort()).toEqual(["/acme/polaris", "/repos/acme/polaris"])
+      expect(result.map(project => project.url).sort()).toEqual([
+        "https://github.com/acme/polaris", "https://github.com/acme/polaris-openapi"
+      ])
     })
 
     test("It returns suffix-discovered repos when code search finds nothing", async () => {

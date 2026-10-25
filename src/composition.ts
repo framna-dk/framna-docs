@@ -199,7 +199,8 @@ const gitHubProjectListDataSource = new GitHubProjectListDataSource({
 
 const projectListUserDataRepository = new KeyValueUserDataRepository({
   store: new RedisKeyValueStore(env.getOrThrow("REDIS_URL")),
-  baseKey: "projectList"
+  // Old lists contain ambiguous project names and omit configured repositories in collisions.
+  baseKey: "projectList-v2"
 })
 
 const projectListRepository = new ProjectListRepository({

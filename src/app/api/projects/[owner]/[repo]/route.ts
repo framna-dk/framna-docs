@@ -3,7 +3,7 @@ import { session, projectDetailsDataSource } from "@/composition"
 import { makeUnauthenticatedAPIErrorResponse } from "@/common"
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ owner: string; repo: string }> }
 ) {
   const isAuthenticated = await session.getIsAuthenticated()
@@ -13,7 +13,8 @@ export async function GET(
   const { owner, repo } = await params
 
   try {
-    const project = await projectDetailsDataSource.getProjectDetails(owner, repo)
+    const exactRepository = new URL(request.url).searchParams.get("repository") === "true"
+    const project = await projectDetailsDataSource.getProjectDetails(owner, repo, { exactRepository })
 
     if (!project) {
       return NextResponse.json(

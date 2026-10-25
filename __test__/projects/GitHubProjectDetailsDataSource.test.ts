@@ -193,11 +193,11 @@ describe("GitHubProjectDetailsDataSource", () => {
       )
     })
 
-    test("It does not double-append suffix if already present", async () => {
+    test("It resolves a full repository name verbatim in exact mode", async () => {
       const graphQlClient = createMockGraphQLClient(createRepositoryResponse())
       const sut = createSut({ graphQlClient })
 
-      await sut.getProjectDetails("acme", "my-project-openapi")
+      await sut.getProjectDetails("acme", "my-project-openapi", { exactRepository: true })
 
       expect(graphQlClient.graphql).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -206,45 +206,55 @@ describe("GitHubProjectDetailsDataSource", () => {
       )
     })
 
-    test("It fetches a repo by exact name when the repo has no suffix and contains a config file", async () => {
-      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
-      const successResponse = createRepositoryResponse({
-        name: "my-backend",
-        configYml: { text: "name: My Backend" }
-      })
-
-      const graphQlClient: IGitHubGraphQLClient = {
-        graphql: jest.fn<() => Promise<unknown>>()
-          .mockRejectedValueOnce(notFoundError)
-          .mockResolvedValueOnce(successResponse)
-      }
-      const sut = createSut({ graphQlClient })
-
-      const result = await sut.getProjectDetails("acme", "my-backend")
-
-      expect(result).not.toBeNull()
-      expect(graphQlClient.graphql).toHaveBeenCalledTimes(2)
-      expect((graphQlClient.graphql as jest.Mock).mock.calls[1][0]).toMatchObject({
-        variables: { owner: "acme", name: "my-backend" }
-      })
+    test("It appends the suffix to legacy project names even if the project name itself ends with it", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({ name: "aurora-openapi-openapi" }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "aurora-openapi")
+      expect(graphQlClient.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora-openapi-openapi" } }))
+      expect(result!.path).toBe("/acme/aurora-openapi")
     })
 
-    test("It returns null for a bare-name repo without a config file", async () => {
-      // Without the configuration file the repo has not opted in, and the content-serving
-      // guard would reject its blobs anyway. Details must mirror that rule.
-      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
-      const successResponse = createRepositoryResponse({ name: "my-backend" })
+    test("It fetches an exact repository route without looking for a suffixed counterpart", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
+        name: "aurora", configYml: { text: "name: Aurora API" }
+      }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(result!.path).toBe("/repos/acme/aurora")
+      expect(result!.id).toBe("repo:acme/aurora")
+      expect(graphQlClient.graphql).toHaveBeenCalledTimes(1)
+      expect(graphQlClient.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora" } }))
+    })
 
-      const graphQlClient: IGitHubGraphQLClient = {
-        graphql: jest.fn<() => Promise<unknown>>()
-          .mockRejectedValueOnce(notFoundError)
-          .mockResolvedValueOnce(successResponse)
-      }
-      const sut = createSut({ graphQlClient })
+    test("It does not fall back from a missing legacy project to a bare repository", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockResolvedValue({ repository: null })
+      expect(await createSut({ graphQlClient: { graphql } }).getProjectDetails("acme", "aurora")).toBeNull()
+      expect(graphql).toHaveBeenCalledTimes(1)
+      expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora-openapi" } }))
+    })
 
-      const result = await sut.getProjectDetails("acme", "my-backend")
+    test("It returns null for an exact repository without a config file", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({ name: "aurora" }))
+      expect(await createSut({ graphQlClient }).getProjectDetails("acme", "aurora", { exactRepository: true })).toBeNull()
+    })
 
-      expect(result).toBeNull()
+    test("It does not fall back to a suffixed repository when the exact repository is missing", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockRejectedValue(Object.assign(new Error("Not found"), { type: "NOT_FOUND" }))
+      expect(await createSut({ graphQlClient: { graphql } }).getProjectDetails("acme", "aurora", { exactRepository: true })).toBeNull()
+      expect(graphql).toHaveBeenCalledTimes(1)
+      expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora" } }))
+    })
+
+    test("It serves colliding legacy and exact repository routes from their own repositories", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request =>
+        createRepositoryResponse({ name: request.variables!.name, configYml: { text: "name: Aurora API" } })
+      )
+      const sut = createSut({ graphQlClient: { graphql } })
+      const legacy = await sut.getProjectDetails("acme", "aurora")
+      const monorepo = await sut.getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(legacy!.path).toBe("/acme/aurora")
+      expect(monorepo!.path).toBe("/repos/acme/aurora")
+      expect(legacy!.id).not.toBe(monorepo!.id)
+      expect(legacy!.versions[0].specifications[0].url).toContain("/api/blob/acme/aurora-openapi/")
+      expect(monorepo!.versions[0].specifications[0].url).toContain("/api/blob/acme/aurora/")
     })
   })
 

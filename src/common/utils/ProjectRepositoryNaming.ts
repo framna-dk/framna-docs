@@ -39,4 +39,15 @@ export default class ProjectRepositoryNaming {
       ? repositoryName.slice(0, repositoryName.length - this.suffix.length)
       : repositoryName
   }
+
+  projectPath(owner: string, repositoryName: string): string {
+    const prefix = this.hasSuffix(repositoryName) ? "" : "/repos"
+    return `${prefix}/${encodeURIComponent(owner)}/${encodeURIComponent(this.projectName(repositoryName))}`
+  }
+
+  projectId(owner: string, repositoryName: string): string {
+    return this.hasSuffix(repositoryName)
+      ? `${owner}-${this.projectName(repositoryName)}`
+      : `repo:${owner}/${repositoryName}`
+  }
 }

@@ -72,3 +72,9 @@ test("Incomplete selections do not open the pane", () => {
   expect(getDiffbarSelection("acme", "aurora-api", undefined, "?to=sha")).toBeUndefined()
   expect(getDiffbarSelection("acme", "aurora-api", "feature/update", "/api/diff")).toBeUndefined()
 })
+test("It separates diff-pane preferences for legacy and repository routes with the same name", () => {
+  const diffUrl = "/api/diff/acme/aurora/api.yaml?to=same-sha"
+  const legacy = getDiffbarSelection("acme", "aurora", "feature", diffUrl, "/acme/aurora")
+  const monorepo = getDiffbarSelection("acme", "aurora", "feature", diffUrl, "/repos/acme/aurora")
+  expect(legacy!.branchKey).not.toBe(monorepo!.branchKey)
+})

@@ -117,11 +117,11 @@ export default class PullRequestCommenter {
     ref: string
   }): string {
     const { owner, repositoryName, ref } = params
-    const projectId = this.getProjectId({ repositoryName })
+    const projectPath = this.naming.projectPath(owner, repositoryName)
     const tableHTML = this.makeFileTableHTML(params)
     let result = "### 📖 Documentation Preview"
     result += "\n\n"
-    result += `The changes are now ready to previewed on <a href="${this.domain}/${owner}/${projectId}/${ref}">${this.siteName}</a> 🚀`
+    result += `The changes are now ready to previewed on <a href="${this.domain}${projectPath}/${ref}">${this.siteName}</a> 🚀`
     if (tableHTML) {
       result += "\n\n" + tableHTML
    }
@@ -136,13 +136,13 @@ export default class PullRequestCommenter {
   }) {
     const { files, owner, repositoryName, ref } = params
     const rows: { filename: string, status: string, button: string }[] = []
-    const projectId = this.getProjectId({ repositoryName })
+    const projectPath = this.naming.projectPath(owner, repositoryName)
     // Create rows for each file
     for (const file of files) {
       const status = this.getStatusText(file)
       let button = ""
       if (file.status != "removed") {
-        let link = `${this.domain}/${owner}/${projectId}/${ref}`
+        let link = `${this.domain}${projectPath}/${ref}`
         if (!this.isProjectConfigurationFile(file.filename)) {
           link += `/${encodeURIComponent(file.filename)}`
         }
@@ -171,10 +171,6 @@ export default class PullRequestCommenter {
     } else {
       return ""
     }
-  }
-  
-  private getProjectId({ repositoryName }: { repositoryName: string }): string {
-    return this.naming.projectName(repositoryName)
   }
   
   private isProjectConfigurationFile(filename: string) {

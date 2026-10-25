@@ -25,6 +25,20 @@ function configuredCommenter(config: { text?: string; variant?: "configYml" | "c
   return { sut, client, request }
 }
 
+test.each([
+  { repository: "aurora", path: "/repos/acme/aurora" },
+  { repository: "aurora-openapi", path: "/acme/aurora" }
+])("It uses the unambiguous preview route for $repository", async ({ repository, path }) => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "services/user/openapi.yaml", status: "modified" }]
+  })
+  await sut.commentPullRequest({ ...request, repositoryName: repository })
+  const body = client.addCommentToPullRequest.mock.calls[0][0].body
+  expect(body).toContain(`href="https://example.com${path}/feature/api"`)
+  expect(body).toContain(`href="https://example.com${path}/feature/api/services%2Fuser%2Fopenapi.yaml"`)
+})
+
 test.each(["configYml", "configYaml"] as const)("It comments on configured nested specs in a bare repository using %s", async variant => {
   const { sut, client, request } = configuredCommenter({
     variant,
@@ -40,7 +54,7 @@ test.each(["configYml", "configYaml"] as const)("It comments on configured neste
   await sut.commentPullRequest(request)
   expect(client.graphql).toHaveBeenCalledWith(expect.objectContaining({ appInstallationId: 1234 }))
   const body = client.addCommentToPullRequest.mock.calls[0][0].body
-  expect(body).toContain("https://example.com/acme/aurora/feature/api/services%2Fuser%2Fopenapi.yaml")
+  expect(body).toContain("https://example.com/repos/acme/aurora/feature/api/services%2Fuser%2Fopenapi.yaml")
   expect(body).toContain("services%2Forders%2Fapi.json")
   expect(body).not.toContain("services/other")
   expect(body).not.toContain("build.yml")

@@ -73,49 +73,30 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     this.remoteConfigEncoder = config.remoteConfigEncoder
   }
 
-  async getProjectDetails(owner: string, repo: string): Promise<Project | null> {
-    const candidateNames = this.naming.hasSuffix(repo)
-      ? [repo]
-      : [this.naming.suffixedName(repo), repo]
-
-    for (const repoName of candidateNames) {
-      let response: Awaited<ReturnType<typeof this.fetchRepository>>
-      try {
-        // Candidate names must be tried in order; the fallback only runs if the first is not found.
-        // eslint-disable-next-line no-await-in-loop
-        response = await this.fetchRepository(owner, repoName)
-      } catch (error) {
-        if (this.isNotFoundError(error)) {
-          continue
-        }
-        throw error
-      }
-      if (!response.repository) {
-        continue
-      }
-
-      const repository = response.repository
-      // A repository found under its bare name participates only if it opted in via the
-      // configuration file. This mirrors list discovery and the content-serving guard.
-      if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) {
-        continue
-      }
-      const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
-
-      // eslint-disable-next-line no-await-in-loop
-      return await this.mapToProject({
-        owner,
-        name: repository.name,
-        defaultBranchRef: repository.defaultBranchRef,
-        configYml: repository.configYml,
-        configYaml: repository.configYaml,
-        branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-        tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-        pullRequests
-      })
+  async getProjectDetails(owner: string, repo: string, options?: { exactRepository?: boolean }): Promise<Project | null> {
+    const repositoryName = options?.exactRepository ? repo : `${repo}${this.naming.suffix}`
+    let response: Awaited<ReturnType<typeof this.fetchRepository>>
+    try {
+      response = await this.fetchRepository(owner, repositoryName)
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null
+      throw error
     }
-
-    return null
+    const repository = response.repository
+    if (!repository) return null
+    // Exact repository routes still require the repository to opt in.
+    if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) return null
+    const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
+    return this.mapToProject({
+      owner,
+      name: repository.name,
+      defaultBranchRef: repository.defaultBranchRef,
+      configYml: repository.configYml,
+      configYaml: repository.configYaml,
+      branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+      tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+      pullRequests
+    })
   }
 
   private async fetchRepository(owner: string, name: string) {
@@ -258,9 +239,10 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     .map(v => this.setDefaultSpecification(v, config?.defaultSpecificationName))
 
     return {
-      id: `${data.owner}-${defaultName}`,
+      id: this.naming.projectId(data.owner, data.name),
       owner: data.owner,
       name: defaultName,
+      path: this.naming.projectPath(data.owner, data.name),
       displayName: config?.name || defaultName,
       versions,
       imageURL,

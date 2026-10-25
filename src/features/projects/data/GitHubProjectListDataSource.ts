@@ -71,31 +71,10 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
       this.getRepositoriesForLoginsByNameSuffix(logins),
       this.getRepositoriesForLoginsByConfigFile(logins)
     ])
-    const repos = dedupeBy(
+    return dedupeBy(
       [...suffixRepos, ...configFileRepos],
       repo => `${repo.owner.login}/${repo.name}`
     )
-    return this.resolveProjectNameCollisions(repos)
-  }
-
-  // "foo-openapi" and "foo" both map to the project name "foo". Project details resolves the
-  // suffixed repository first, so the list must do the same: keep the suffixed repo and drop
-  // the shadowed one, otherwise the list shows entries that cannot be reached.
-  private resolveProjectNameCollisions(repos: GraphQLProjectListRepository[]): GraphQLProjectListRepository[] {
-    const byProject = new Map<string, GraphQLProjectListRepository>()
-    for (const repo of repos) {
-      const key = `${repo.owner.login}/${this.naming.projectName(repo.name)}`
-      const existing = byProject.get(key)
-      if (!existing) {
-        byProject.set(key, repo)
-        continue
-      }
-      const winner = this.naming.hasSuffix(existing.name) ? existing : repo
-      const shadowed = winner === existing ? repo : existing
-      byProject.set(key, winner)
-      console.warn(`Project name collision for ${key}: ${winner.owner.login}/${winner.name} shadows ${shadowed.owner.login}/${shadowed.name}`)
-    }
-    return Array.from(byProject.values())
   }
 
   private async getRepositoriesForLoginsByNameSuffix(logins: string[]): Promise<GraphQLProjectListRepository[]> {
@@ -207,8 +186,9 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
     const defaultName = this.naming.projectName(repo.name)
 
     return {
-      id: `${repo.owner.login}-${defaultName}`,
+      id: this.naming.projectId(repo.owner.login, repo.name),
       name: defaultName,
+      path: this.naming.projectPath(repo.owner.login, repo.name),
       displayName: config?.name || defaultName,
       owner: repo.owner.login,
       imageURL: config?.image ? this.makeImageURL(repo.owner.login, repo.name, config.image, repo.defaultBranchRef?.target.oid) : undefined,
