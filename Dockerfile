@@ -1,4 +1,4 @@
-FROM node:24.22.1-alpine AS base
+FROM node:26.12.1-alpine AS base
 
 FROM base AS oasdiff
 ARG OASDIFF_VERSION=2.10.0
