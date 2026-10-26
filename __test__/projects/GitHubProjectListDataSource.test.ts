@@ -636,7 +636,70 @@ describe("GitHubProjectListDataSource", () => {
       })
 
       expect(await sut.getProjectList()).toHaveLength(1)
-      expect(graphql.mock.calls.filter(([request]) => request.query.includes("RegisteredRepository"))).toHaveLength(1)
+      expect(graphql.mock.calls.filter(([request]) => request.query.includes("RegisteredRepository"))).toHaveLength(0)
+    })
+
+    test("It skips candidates found through code search while probing the remaining candidates", async () => {
+      const discovered = configuredRepo("aurora")
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (request.query.includes("RegisteredRepository")) return { repository: configuredRepo(request.variables!.name) }
+        if (request.query.includes("ConfigFileRepos")) return { repo_0: discovered }
+        return { search: { results: [], pageInfo: { hasNextPage: false } } }
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        codeSearchDataSource: createMockCodeSearchDataSource([{ owner: "acme", name: "aurora", isPrivate: true }]),
+        discoveryRepository: { getRepositories: async () => [{ owner: "ACME", name: "Aurora" }, { owner: "acme", name: "borealis" }], add: async () => {} }
+      })
+      expect((await sut.getProjectList()).map(project => project.name)).toEqual(["aurora", "borealis"])
+      const probes = graphql.mock.calls.filter(([request]) => request.query.includes("RegisteredRepository"))
+      expect(probes).toHaveLength(1)
+      expect(probes[0][0].variables).toEqual({ owner: "acme", name: "borealis" })
+    })
+
+    test("It bounds concurrent database candidate probes", async () => {
+      let release!: () => void
+      let firstBatchStarted!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const started = new Promise<void>(resolve => { firstBatchStarted = resolve })
+      let active = 0
+      let peak = 0
+      let count = 0
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (!request.query.includes("RegisteredRepository")) return { search: { results: [], pageInfo: { hasNextPage: false } } }
+        active++
+        peak = Math.max(peak, active)
+        if (++count === 4) firstBatchStarted()
+        await gate
+        active--
+        return { repository: configuredRepo(request.variables!.name) }
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        discoveryRepository: { getRepositories: async () => Array.from({ length: 11 }, (_, i) => ({ owner: "acme", name: `service-${i}` })), add: async () => {} }
+      })
+      const pending = sut.getProjectList()
+      await started
+      const initialCount = count
+      release()
+      expect(await pending).toHaveLength(11)
+      expect(initialCount).toBe(4)
+      expect(peak).toBeLessThanOrEqual(4)
+    })
+
+    test("It stops scheduling candidate batches when a service error occurs", async () => {
+      let count = 0
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (!request.query.includes("RegisteredRepository")) return { search: { results: [], pageInfo: { hasNextPage: false } } }
+        count++
+        throw new Error("Rate limited")
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        discoveryRepository: { getRepositories: async () => Array.from({ length: 11 }, (_, i) => ({ owner: "acme", name: `service-${i}` })), add: async () => {} }
+      })
+      await expect(sut.getProjectList()).rejects.toThrow("Rate limited")
+      expect(count).toBeLessThanOrEqual(4)
     })
 
     test("It applies opt-in and hidden-repository rules to registered candidates", async () => {

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { ProjectSummary } from "@/features/projects/domain"
 import { ProjectListContext } from "./ProjectListContext"
+import ProjectListState from "../domain/ProjectListState"
 
 export default function ProjectListContextProvider({
   children
@@ -13,33 +14,30 @@ export default function ProjectListContextProvider({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const isRefreshingRef = useRef(false)
-  const addedProjectVersionRef = useRef(0)
-  const addedProjectsRef = useRef(new Map<string, { project: ProjectSummary; version: number }>())
+  const listState = useRef(new ProjectListState()).current
 
   const addProject = useCallback((project: ProjectSummary) => {
-    addedProjectsRef.current.set(project.id, { project, version: ++addedProjectVersionRef.current })
-    setProjects(current => [...current.filter(item => item.id !== project.id), project]
-      .sort((a, b) => a.displayName.localeCompare(b.displayName)))
+    setProjects(listState.addProject(project))
     setError(null)
-  }, [])
+  }, [listState])
 
   const fetchProjects = useCallback(async (forceRefresh: boolean): Promise<ProjectSummary[] | null> => {
-    const versionAtStart = addedProjectVersionRef.current
+    const request = listState.beginRequest()
     const url = forceRefresh ? "/api/projects?refresh=true" : "/api/projects"
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const { projects: newProjects } = await res.json()
-    const merged = new Map<string, ProjectSummary>((newProjects || []).map((project: ProjectSummary) => [project.id, project]))
-    addedProjectsRef.current.forEach(({ project, version }, id) => {
-      // Keep a just-added project if a request started before registration completed.
-      // Later refreshes are authoritative, including changes to GitHub access.
-      if (merged.has(id) || version <= versionAtStart) addedProjectsRef.current.delete(id)
-      else merged.set(id, project)
-    })
-    setProjects(Array.from(merged.values()).sort((a, b) => a.displayName.localeCompare(b.displayName)))
-    setError(null)
-    return newProjects || []
-  }, [])
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { projects: newProjects } = await res.json()
+      const applied = listState.applyResponse(request, newProjects || [])
+      if (!applied) return null
+      setProjects(applied)
+      setError(null)
+      return applied
+    } catch (error) {
+      if (listState.isCurrent(request)) throw error
+      return null
+    }
+  }, [listState])
 
   const refresh = useCallback(() => {
     if (isRefreshingRef.current) return
@@ -60,12 +58,10 @@ export default function ProjectListContextProvider({
       } finally {
         setLoading(false)
       }
-      fetchProjects(true).catch(err =>
-        console.error("Failed to refresh project list:", err)
-      )
+      refresh()
     }
     load()
-  }, [fetchProjects])
+  }, [fetchProjects, refresh])
 
   // Refresh on visibility change and focus
   useEffect(() => {

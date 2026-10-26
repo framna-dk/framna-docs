@@ -10,6 +10,8 @@ import IProjectConfig from "../domain/IProjectConfig"
 import IGitHubCodeSearchDataSource from "../domain/IGitHubCodeSearchDataSource"
 import type { default as IProjectDiscoveryRepository, ProjectDiscoveryRepository } from "../domain/IProjectDiscoveryRepository"
 
+const MAX_REGISTERED_REPOSITORY_PROBES = 4
+
 type GraphQLProjectListRepository = {
   readonly name: string
   readonly isPrivate?: boolean
@@ -82,27 +84,32 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
   }
 
   private async getRepositoriesForLogins(logins: string[]): Promise<GraphQLProjectListRepository[]> {
-    const [suffixRepos, configFileRepos, registeredRepos] = await Promise.all([
+    const [suffixRepos, configFileRepos, candidates] = await Promise.all([
       this.getRepositoriesForLoginsByNameSuffix(logins),
       this.getRepositoriesForLoginsByConfigFile(logins),
-      this.getRegisteredRepositories(logins)
+      this.discoveryRepository.getRepositories()
     ])
+    const automatic = [...suffixRepos, ...configFileRepos]
+    const found = new Set(automatic.map(repo => `${repo.owner.login}/${repo.name}`.toLowerCase()))
+    const registeredRepos = await this.getRegisteredRepositories(logins,
+      candidates.filter(repo => !found.has(`${repo.owner}/${repo.name}`.toLowerCase()))
+    )
     return dedupeBy(
-      [...suffixRepos, ...configFileRepos, ...registeredRepos],
+      [...automatic, ...registeredRepos],
       repo => `${repo.owner.login}/${repo.name}`.toLowerCase()
     )
   }
 
   private async getRegisteredRepositories(
     logins: string[],
-    candidates?: ProjectDiscoveryRepository[]
+    candidates: ProjectDiscoveryRepository[]
   ): Promise<GraphQLProjectListRepository[]> {
     const registered = dedupeBy(
-      candidates ?? await this.discoveryRepository.getRepositories(),
+      candidates,
       repo => `${repo.owner}/${repo.name}`.toLowerCase()
     )
     const knownOwners = new Set(logins.map(login => login.toLowerCase()))
-    const results = await Promise.all(registered.map(async repo => {
+    const probe = async (repo: ProjectDiscoveryRepository) => {
       try {
         // Probe each candidate with the user's token. A missing or inaccessible repo
         // must not prevent other registered repositories from being discovered.
@@ -123,7 +130,16 @@ export default class GitHubProjectListDataSource implements IProjectListDataSour
         if (isNotFoundError(error)) return undefined
         throw error
       }
-    }))
+    }
+    const results: (GraphQLProjectListRepository | undefined)[] = []
+    // Bound request bursts from the shared table; stop scheduling new batches
+    // when a service error occurs, while missing repositories remain skippable.
+    for (let i = 0; i < registered.length; i += MAX_REGISTERED_REPOSITORY_PROBES) {
+      // Batches must run sequentially to enforce the concurrency bound.
+      // eslint-disable-next-line no-await-in-loop
+      const batch = await Promise.all(registered.slice(i, i + MAX_REGISTERED_REPOSITORY_PROBES).map(probe))
+      results.push(...batch)
+    }
     return results.filter((repo): repo is GraphQLProjectListRepository => repo !== undefined)
   }
 

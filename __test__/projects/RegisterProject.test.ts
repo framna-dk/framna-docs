@@ -39,10 +39,23 @@ test("It does not query or save malformed input", async () => {
   expect(add).not.toHaveBeenCalled()
 })
 
-test.each(["acme/aurora-openapi", "https://github.com/acme/aurora-OPENAPI"])("It rejects fast-tracking a repository with the discovery suffix: %s", async input => {
-  const { service, add, getProjectCandidate } = registration()
+test.each(["acme/aurora-openapi", "https://github.com/acme/aurora-openapi"])("It rejects fast-tracking a repository with the discovery suffix: %s", async input => {
+  const { service, add, getProjectCandidate } = registration({ repository: { owner: "acme", name: "aurora-openapi" }, project })
   await expect(service.register(input)).rejects.toMatchObject({ status: 400, message: expect.stringContaining("discovered automatically") })
-  expect(getProjectCandidate).not.toHaveBeenCalled()
+  expect(getProjectCandidate).toHaveBeenCalledTimes(1)
+  expect(add).not.toHaveBeenCalled()
+})
+
+test.each(["aurora-OPENAPI", "aurora-openapi"])("It accepts a canonical uppercase suffix that automatic discovery does not match (input: %s)", async name => {
+  const canonical = { owner: "acme", name: "aurora-OPENAPI" }
+  const { service, add } = registration({ repository: canonical, project: { ...project, name: canonical.name, path: "/repos/acme/aurora-OPENAPI" } })
+  await service.register(`https://github.com/acme/${name}`)
+  expect(add).toHaveBeenCalledWith(canonical)
+})
+
+test("It rejects a case-varied input when GitHub's canonical repository has the automatic suffix", async () => {
+  const { service, add } = registration({ repository: { owner: "acme", name: "aurora-openapi" }, project })
+  await expect(service.register("acme/aurora-OPENAPI")).rejects.toMatchObject({ status: 400 })
   expect(add).not.toHaveBeenCalled()
 })
 
@@ -62,7 +75,7 @@ test("It does not save repositories with invalid configuration", async () => {
 function handler(authenticated = true) {
   const register = jest.fn<(input: string) => Promise<ProjectSummary>>().mockResolvedValue(project)
   const post = createRegisterProjectHandler({
-    session: { getIsAuthenticated: async () => authenticated }, registration: { register }
+    session: { getIsAuthenticated: async () => authenticated }, registration: { register }, publicUrl: "https://example.com"
   })
   return { post, register }
 }
@@ -80,6 +93,26 @@ test("It requires authentication before onboarding a repository", async () => {
 test("It rejects cross-origin submissions", async () => {
   const { post, register } = handler()
   expect((await post(request(undefined, { "content-type": "application/json", ...{ origin: "https://other.example.com" } }))).status).toBe(403)
+  expect(register).not.toHaveBeenCalled()
+})
+
+test("It accepts the configured public origin when the server request uses an internal bind address", async () => {
+  const { post, register } = handler()
+  const response = await post(new Request("http://0.0.0.0:3000/api/projects", {
+    method: "POST", headers: { "content-type": "application/json", origin: "https://example.com" },
+    body: JSON.stringify({ repository: "acme/aurora" })
+  }))
+  expect(response.status).toBe(200)
+  expect(register).toHaveBeenCalledWith("acme/aurora")
+})
+
+test("It does not trust the bind address or forwarded headers as the public origin", async () => {
+  const { post, register } = handler()
+  const response = await post(new Request("http://0.0.0.0:3000/api/projects", {
+    method: "POST", headers: { "content-type": "application/json", origin: "http://0.0.0.0:3000", "x-forwarded-host": "example.com", "x-forwarded-proto": "https" },
+    body: JSON.stringify({ repository: "acme/aurora" })
+  }))
+  expect(response.status).toBe(403)
   expect(register).not.toHaveBeenCalled()
 })
 

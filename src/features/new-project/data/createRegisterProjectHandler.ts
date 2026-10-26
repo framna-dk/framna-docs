@@ -4,13 +4,15 @@ import { type default as RegisterProject, ProjectRegistrationError } from "../do
 export default function createRegisterProjectHandler(config: {
   session: Pick<ISession, "getIsAuthenticated">
   registration: Pick<RegisterProject, "register">
+  publicUrl: string
 }) {
+  const publicOrigin = new URL(config.publicUrl).origin
   return async (request: Request): Promise<Response> => {
     if (!await config.session.getIsAuthenticated()) {
       return Response.json({ error: "Sign in to add a project." }, { status: 401 })
     }
     const origin = request.headers.get("origin")
-    if (origin && origin !== new URL(request.url).origin) {
+    if (origin && origin !== publicOrigin) {
       return Response.json({ error: "Request origin is not allowed." }, { status: 403 })
     }
     if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json") {
