@@ -49,11 +49,11 @@ const NewProjectSteps = ({
         <HighlightText
           content={`${index + 1}. ${step.content}`}
           highlight={[step.highlight]}
-          variant="body3"
+          variant="body1"
           sx={{ marginRight: { xs: 1 } }}
         /> :
         <Typography
-          variant="body3"
+          variant="body1"
           sx={{
             display: { md: "flex" },
             marginRight: { xs: 4 }
@@ -67,11 +67,12 @@ const NewProjectSteps = ({
   )
 
 return (
-    <Box display="flex" alignItems="start" justifyContent="center" flexDirection="column" gap={4}>
+    <Box display="flex" alignItems="start" flexDirection="column" gap={3} width={1}>
+        <Typography variant="h6">Create a new project</Typography>
         {steps.map((step: StepType, index: number) => 
           <Fragment key={`box-step-${index}`}>
             {isCreateRepositoryStep(step) ? 
-              <Box display="flex" flexDirection="column" gap={2}>
+              <Box display="flex" flexDirection="column" gap={2} width={1}>
                   {getStepContent(step, index)}
                 <NewProjectForm
                   repositoryNameSuffix={repositoryNameSuffix}

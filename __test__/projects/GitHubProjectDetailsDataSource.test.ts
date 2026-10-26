@@ -1,4 +1,5 @@
 import { jest } from "@jest/globals"
+import type { IGitHubClient } from "@/common"
 import { GitHubProjectDetailsDataSource } from "@/features/projects/data"
 import { IGitHubGraphQLClient } from "@/features/projects/domain"
 import { IEncryptionService } from "@/features/encrypt/EncryptionService"
@@ -37,6 +38,7 @@ const createMockRemoteConfigEncoder = (): IRemoteConfigEncoder => ({
 
 const createSut = (overrides: {
   graphQlClient?: IGitHubGraphQLClient
+  commitComparer?: Pick<IGitHubClient, "compareCommitsWithBasehead">
   repositoryNameSuffix?: string
   projectConfigurationFilename?: string
   encryptionService?: IEncryptionService
@@ -44,6 +46,7 @@ const createSut = (overrides: {
 } = {}) => {
   return new GitHubProjectDetailsDataSource({
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
+    commitComparer: overrides.commitComparer || { compareCommitsWithBasehead: async () => ({ mergeBaseSha: "merge123" }) },
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     encryptionService: overrides.encryptionService || createMockEncryptionService(),
@@ -57,7 +60,7 @@ const createRepositoryResponse = (overrides: {
   configYml?: { text: string } | null
   branches?: { name: string; target: { oid: string; tree: { entries: { name: string }[] } } }[]
   tags?: { name: string; target: { oid: string; tree: { entries: { name: string }[] } } }[]
-  pullRequests?: { number: number; headRefName: string; baseRefName: string; baseRefOid: string; files?: { nodes: { path: string }[] } }[]
+  pullRequests?: { number: number; headRefName: string; headRefOid?: string; headRepository?: { nameWithOwner: string } | null; baseRefName: string; baseRefOid: string; files?: { nodes: { path: string }[] } }[]
 } = {}) => ({
   repository: {
     name: overrides.name || "my-project-openapi",
@@ -72,7 +75,11 @@ const createRepositoryResponse = (overrides: {
       edges: (overrides.tags || []).map(node => ({ node }))
     },
     pullRequests: {
-      edges: (overrides.pullRequests || []).map(node => ({ node }))
+      edges: (overrides.pullRequests || []).map(node => ({ node: {
+        headRepository: { nameWithOwner: `acme/${overrides.name || "my-project-openapi"}` },
+        headRefOid: overrides.branches?.find(branch => branch.name === node.headRefName)?.target.oid ?? "abc123",
+        ...node
+      } }))
     }
   }
 })
@@ -190,11 +197,11 @@ describe("GitHubProjectDetailsDataSource", () => {
       )
     })
 
-    test("It does not double-append suffix if already present", async () => {
+    test("It resolves a full repository name verbatim in exact mode", async () => {
       const graphQlClient = createMockGraphQLClient(createRepositoryResponse())
       const sut = createSut({ graphQlClient })
 
-      await sut.getProjectDetails("acme", "my-project-openapi")
+      await sut.getProjectDetails("acme", "my-project-openapi", { exactRepository: true })
 
       expect(graphQlClient.graphql).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -203,45 +210,55 @@ describe("GitHubProjectDetailsDataSource", () => {
       )
     })
 
-    test("It fetches a repo by exact name when the repo has no suffix and contains a config file", async () => {
-      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
-      const successResponse = createRepositoryResponse({
-        name: "my-backend",
-        configYml: { text: "name: My Backend" }
-      })
-
-      const graphQlClient: IGitHubGraphQLClient = {
-        graphql: jest.fn<() => Promise<unknown>>()
-          .mockRejectedValueOnce(notFoundError)
-          .mockResolvedValueOnce(successResponse)
-      }
-      const sut = createSut({ graphQlClient })
-
-      const result = await sut.getProjectDetails("acme", "my-backend")
-
-      expect(result).not.toBeNull()
-      expect(graphQlClient.graphql).toHaveBeenCalledTimes(2)
-      expect((graphQlClient.graphql as jest.Mock).mock.calls[1][0]).toMatchObject({
-        variables: { owner: "acme", name: "my-backend" }
-      })
+    test("It appends the suffix to legacy project names even if the project name itself ends with it", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({ name: "aurora-openapi-openapi" }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "aurora-openapi")
+      expect(graphQlClient.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora-openapi-openapi" } }))
+      expect(result!.path).toBe("/acme/aurora-openapi")
     })
 
-    test("It returns null for a bare-name repo without a config file", async () => {
-      // Without the configuration file the repo has not opted in, and the content-serving
-      // guard would reject its blobs anyway. Details must mirror that rule.
-      const notFoundError = Object.assign(new Error("Not found"), { type: "NOT_FOUND" })
-      const successResponse = createRepositoryResponse({ name: "my-backend" })
+    test("It fetches an exact repository route without looking for a suffixed counterpart", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
+        name: "aurora", configYml: { text: "name: Aurora API" }
+      }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(result!.path).toBe("/repos/acme/aurora")
+      expect(result!.id).toBe("repo:acme/aurora")
+      expect(graphQlClient.graphql).toHaveBeenCalledTimes(1)
+      expect(graphQlClient.graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora" } }))
+    })
 
-      const graphQlClient: IGitHubGraphQLClient = {
-        graphql: jest.fn<() => Promise<unknown>>()
-          .mockRejectedValueOnce(notFoundError)
-          .mockResolvedValueOnce(successResponse)
-      }
-      const sut = createSut({ graphQlClient })
+    test("It does not fall back from a missing legacy project to a bare repository", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockResolvedValue({ repository: null })
+      expect(await createSut({ graphQlClient: { graphql } }).getProjectDetails("acme", "aurora")).toBeNull()
+      expect(graphql).toHaveBeenCalledTimes(1)
+      expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora-openapi" } }))
+    })
 
-      const result = await sut.getProjectDetails("acme", "my-backend")
+    test("It returns null for an exact repository without a config file", async () => {
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({ name: "aurora" }))
+      expect(await createSut({ graphQlClient }).getProjectDetails("acme", "aurora", { exactRepository: true })).toBeNull()
+    })
 
-      expect(result).toBeNull()
+    test("It does not fall back to a suffixed repository when the exact repository is missing", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockRejectedValue(Object.assign(new Error("Not found"), { type: "NOT_FOUND" }))
+      expect(await createSut({ graphQlClient: { graphql } }).getProjectDetails("acme", "aurora", { exactRepository: true })).toBeNull()
+      expect(graphql).toHaveBeenCalledTimes(1)
+      expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ variables: { owner: "acme", name: "aurora" } }))
+    })
+
+    test("It serves colliding legacy and exact repository routes from their own repositories", async () => {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request =>
+        createRepositoryResponse({ name: request.variables!.name, configYml: { text: "name: Aurora API" } })
+      )
+      const sut = createSut({ graphQlClient: { graphql } })
+      const legacy = await sut.getProjectDetails("acme", "aurora")
+      const monorepo = await sut.getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(legacy!.path).toBe("/acme/aurora")
+      expect(monorepo!.path).toBe("/repos/acme/aurora")
+      expect(legacy!.id).not.toBe(monorepo!.id)
+      expect(legacy!.versions[0].specifications[0].url).toContain("/api/blob/acme/aurora-openapi/")
+      expect(monorepo!.versions[0].specifications[0].url).toContain("/api/blob/acme/aurora/")
     })
   })
 
@@ -552,13 +569,14 @@ specifications:
           graphql: jest.fn<() => Promise<unknown>>()
             .mockResolvedValueOnce(phase1Response)
             .mockResolvedValueOnce(phase2Response)
+            .mockResolvedValueOnce({ repository: { r0s0: { oid: "old" }, r1s0: { oid: "new" } } })
         }
         const sut = createSut({ graphQlClient })
 
         const result = await sut.getProjectDetails("acme", "my-project")
         const spec = result!.versions[0].specifications[0]
 
-        expect(spec.diffURL).toBeDefined()
+        expect(spec.diffURL).toBe("/api/diff/acme/my-project-openapi/services%2Fuser%2Fopenapi.yaml?baseRefOid=base123&to=feat123")
         expect(spec.diffBaseBranch).toBe("main")
       })
 
@@ -570,10 +588,90 @@ specifications:
 
         expect(graphQlClient.graphql).toHaveBeenCalledTimes(1)
       })
+
+      test.each([
+        { name: "modified", base: { oid: "before" }, head: { oid: "after" }, changed: true },
+        { name: "added", base: null, head: { oid: "after" }, changed: true },
+        { name: "unchanged", base: { oid: "same" }, head: { oid: "same" }, changed: false }
+      ])("It checks the configured $name spec independently of the PR file list", async ({ base, head, changed }) => {
+        const specPath = "services/user/openapi.yaml"
+        const phase1 = createRepositoryResponse({
+          name: "aurora",
+          configYml: { text: `specifications:\n  - path: ${specPath}\n  - path: services/orders/api.yaml` },
+          branches: [{ name: "feature", target: { oid: "head123", tree: { entries: [] } } }],
+          pullRequests: [{
+            number: 42, headRefName: "feature", baseRefName: "main", baseRefOid: "base-tip",
+            files: { nodes: Array.from({ length: 100 }, (_, i) => ({ path: `src/file-${i}.ts` })) }
+          }]
+        })
+        const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>()
+          .mockResolvedValueOnce(phase1)
+          .mockResolvedValueOnce({ repository: { r0s0: head, r0s1: { oid: "orders" } } })
+          .mockResolvedValueOnce({ repository: {
+            r0s0: base, r0s1: { oid: "orders" },
+            r1s0: head, r1s1: { oid: "orders" }
+          } })
+        const compareCommitsWithBasehead = jest.fn<IGitHubClient["compareCommitsWithBasehead"]>()
+          .mockResolvedValue({ mergeBaseSha: "merge-base" })
+        const sut = createSut({ graphQlClient: { graphql }, commitComparer: { compareCommitsWithBasehead } })
+
+        const project = await sut.getProjectDetails("acme", "aurora")
+        const [orders, user] = project!.versions[0].specifications
+
+        expect(Boolean(user.diffURL)).toBe(changed)
+        expect(orders.diffURL).toBeUndefined()
+        expect(compareCommitsWithBasehead).toHaveBeenCalledWith({
+          repositoryOwner: "acme", repositoryName: "aurora", baseRefOid: "base-tip", headRefOid: "head123"
+        })
+        const query = graphql.mock.calls[2][0].query
+        expect(query).toContain(`merge-base:${specPath}`)
+        expect(query).toContain(`head123:${specPath}`)
+        expect(query).not.toContain("base-tip:")
+        expect(query).not.toContain("src/file-")
+      })
     })
   })
 
   describe("pull requests", () => {
+    test.each([
+      { kind: "fork", headRepository: { nameWithOwner: "contributor/aurora" }, headRefOid: "feature123" },
+      { kind: "stale local head", headRepository: { nameWithOwner: "acme/aurora" }, headRefOid: "older-commit" },
+      { kind: "deleted head repository", headRepository: null, headRefOid: "feature123" }
+    ])("It does not associate a $kind PR with a same-named local branch", async metadata => {
+      const path = "services/user/openapi.yaml"
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>()
+        .mockResolvedValueOnce(createRepositoryResponse({
+          name: "aurora", configYml: { text: `specifications:\n  - path: ${path}` },
+          branches: [{ name: "feature", target: { oid: "feature123", tree: { entries: [] } } }],
+          pullRequests: [{
+            number: 7, headRefName: "feature", baseRefName: "main", baseRefOid: "base123",
+            headRefOid: metadata.headRefOid, headRepository: metadata.headRepository,
+            files: { nodes: [{ path: "README.md" }] }
+          }]
+        }))
+        .mockResolvedValueOnce({ repository: { r0s0: { oid: "changed-spec" } } })
+      const compareCommitsWithBasehead = jest.fn<IGitHubClient["compareCommitsWithBasehead"]>()
+      const result = await createSut({ graphQlClient: { graphql }, commitComparer: { compareCommitsWithBasehead } })
+        .getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(result!.versions[0].specifications[0].diffURL).toBeUndefined()
+      expect(result!.versions[0].specifications[0].diffPrUrl).toBeUndefined()
+      expect(compareCommitsWithBasehead).not.toHaveBeenCalled()
+      expect(graphql).toHaveBeenCalledTimes(2)
+      expect(graphql.mock.calls[0][0].query).toContain("headRepository { nameWithOwner }")
+      expect(graphql.mock.calls[0][0].query).toContain("headRefOid")
+    })
+
+    test.each([false, true])("It preserves the matching local PR when a same-named fork PR is present (fork first: %s)", async forkFirst => {
+      const local = { number: 42, headRefName: "feature", headRefOid: "feature123", headRepository: { nameWithOwner: "ACME/my-project-openapi" }, baseRefName: "main", baseRefOid: "base123", files: { nodes: [{ path: "api.yml" }] } }
+      const fork = { ...local, number: 7, headRepository: { nameWithOwner: "contributor/my-project-openapi" } }
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
+        branches: [{ name: "feature", target: { oid: "feature123", tree: { entries: [{ name: "api.yml" }] } } }],
+        pullRequests: forkFirst ? [fork, local] : [local, fork]
+      }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "my-project")
+      expect(result!.versions[0].specifications[0].diffPrUrl).toBe("https://github.com/acme/my-project-openapi/pull/42")
+    })
+
     test("It adds diff URL for changed files in PRs", async () => {
       const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
         branches: [{

@@ -1,6 +1,7 @@
 import Project from "./Project"
 import Version, { getDefaultSpecification } from "./Version"
 import OpenApiSpecification from "./OpenApiSpecification"
+import { getProjectPath, parseProjectRoute } from "./projectRoutes"
 
 export default function getProjectSelectionFromPath({
   projects,
@@ -27,7 +28,9 @@ export default function getProjectSelectionFromPath({
   if (!projectName) {
     return {}
   }
-  const project = projects.find(e => e.owner == owner && e.name == projectName)
+  const route = parseProjectRoute(path)
+  const basePath = route.name ? route.basePath : (projects.length === 1 ? getProjectPath(projects[0]) : route.basePath)
+  const project = projects.find(e => e.owner == owner && getProjectPath(e) === basePath)
   if (!project) {
     return {}
   }
@@ -68,7 +71,8 @@ export default function getProjectSelectionFromPath({
 function guessSelection(pathname: string) {
   // Split before decoding: a specification ID may contain an encoded slash (%2F) when the
   // spec file lives in a subdirectory, which must not be confused with a path separator.
-  const comps = pathname.split("/").map(decodePathComponent)
+  const path = pathname.startsWith("repos/") ? pathname.slice("repos/".length) : pathname
+  const comps = path.split("/").map(decodePathComponent)
   if (comps.length == 0 || comps.length == 1) {
     return {}
   }

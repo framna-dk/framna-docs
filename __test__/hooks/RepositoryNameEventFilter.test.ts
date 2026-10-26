@@ -1,8 +1,7 @@
 import { RepositoryNameEventFilter } from "@/features/hooks/domain"
 
-test("It does not include repositories that do not have the \"-openapi\" suffix", async () => {
+test("It includes repositories without the suffix so configuration opt-in can be checked", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: [],
     disallowlist: []
   })
@@ -10,12 +9,11 @@ test("It does not include repositories that do not have the \"-openapi\" suffix"
     repositoryOwner: "acme",
     repositoryName: "foo"
   })
-  expect(result).toBeFalsy()
+  expect(result).toBeTruthy()
 })
 
 test("It includes repository when both allowlist and disallowlist are empty", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: [],
     disallowlist: []
   })
@@ -28,7 +26,6 @@ test("It includes repository when both allowlist and disallowlist are empty", as
 
 test("It does not include repository when it is not on the allowlist", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: ["acme/example-openapi"],
     disallowlist: []
   })
@@ -41,7 +38,6 @@ test("It does not include repository when it is not on the allowlist", async () 
 
 test("It include repository when it is on the disallowlist", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: [],
     disallowlist: ["acme/example-openapi"]
   })
@@ -54,7 +50,6 @@ test("It include repository when it is on the disallowlist", async () => {
 
 test("It ensures that the disallowlist takes precedence over the allowlist", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: ["acme/example-openapi"],
     disallowlist: ["acme/example-openapi"]
   })
@@ -67,7 +62,6 @@ test("It ensures that the disallowlist takes precedence over the allowlist", asy
 
 test("It requires owner to be included when matching against the allowlist", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: ["example-openapi"],
     disallowlist: []
   })
@@ -81,7 +75,6 @@ test("It requires owner to be included when matching against the allowlist", asy
 
 test("It requires owner to be included when matching against the disallowlist", async () => {
   const sut = new RepositoryNameEventFilter({
-    repositoryNameSuffix: "-openapi",
     allowlist: [],
     disallowlist: ["example-openapi"]
   })

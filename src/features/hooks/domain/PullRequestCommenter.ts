@@ -1,13 +1,12 @@
-import { IGitHubClient, PullRequestFile } from "@/common"
-import { getBaseFilename } from "@/common/utils"
+import { IGitHubClient, PullRequestFile, ProjectRepositoryNaming } from "@/common"
+import { ProjectConfigParser } from "@/features/projects/domain"
 
 export default class PullRequestCommenter {
   private readonly domain: string
   private readonly siteName: string
-  private readonly repositoryNameSuffix: string
-  private readonly projectConfigurationFilename: string
   private readonly gitHubAppId: string
   private readonly gitHubClient: IGitHubClient
+  private readonly naming: ProjectRepositoryNaming
   
   constructor(config: {
     domain: string
@@ -19,10 +18,9 @@ export default class PullRequestCommenter {
   }) {
     this.domain = config.domain
     this.siteName = config.siteName
-    this.repositoryNameSuffix = config.repositoryNameSuffix
-    this.projectConfigurationFilename = config.projectConfigurationFilename
     this.gitHubAppId = config.gitHubAppId
     this.gitHubClient = config.gitHubClient
+    this.naming = new ProjectRepositoryNaming(config)
   }
   
   async commentPullRequest(request: {
@@ -32,7 +30,24 @@ export default class PullRequestCommenter {
     ref: string
     pullRequestNumber: number
   }) {
-    const files = this.getChangedFiles(await this.getYamlFiles(request))
+    // Match the portal's opt-in and config selection on the default branch. Webhook
+    // requests have no user session, so this query uses the installation token.
+    const response = await this.gitHubClient.graphql({
+      appInstallationId: request.appInstallationId,
+      query: `query PreviewConfiguration($owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) {
+          configYml: object(expression: ${JSON.stringify(`HEAD:${this.naming.configFileYml}`)}) { ... on Blob { text } }
+          configYaml: object(expression: ${JSON.stringify(`HEAD:${this.naming.configFileYaml}`)}) { ... on Blob { text } }
+        }
+      }`,
+      variables: { owner: request.repositoryOwner, name: request.repositoryName }
+    })
+    const configBlob = response.repository?.configYml || response.repository?.configYaml
+    if (!this.naming.hasSuffix(request.repositoryName) && !configBlob) return
+    const config = configBlob?.text
+      ? new ProjectConfigParser().tryParse(configBlob.text).config
+      : null
+    const files = this.getChangedFiles(await this.gitHubClient.getPullRequestFiles(request), config?.specifications)
     const commentBody = this.makeCommentBody({
       files,
       owner: request.repositoryOwner,
@@ -59,32 +74,23 @@ export default class PullRequestCommenter {
     }
   }
   
-  private getChangedFiles(files: PullRequestFile[]) {
-    return files
-      .filter(file => file.status != "unchanged")
-      .filter(file => {
-        // Do not include files that begins with a dot (.) unless it's the project configuration.
-        return !file.filename.startsWith(".") || this.isProjectConfigurationFile(file.filename)
-      })
-      .filter(file => {
-        // Do not include files in folders.
-        return file.filename.split("/").length === 1
-      })
-  }
-  
-  private async getYamlFiles(request: {
-    appInstallationId: number,
-    repositoryOwner: string
-    repositoryName: string
-    pullRequestNumber: number
-  }) {
-    const files = await this.gitHubClient.getPullRequestFiles({
-      appInstallationId: request.appInstallationId,
-      repositoryOwner: request.repositoryOwner,
-      repositoryName: request.repositoryName,
-      pullRequestNumber: request.pullRequestNumber
+  private getChangedFiles(files: PullRequestFile[], specifications?: { path: string }[]) {
+    const isRelevant = (filename: string) => {
+      if (this.isProjectConfigurationFile(filename)) return true
+      if (specifications?.length) return specifications.some(spec => spec.path === filename)
+      return !filename.startsWith(".") && !filename.includes("/") && /\.ya?ml$/.test(filename)
+    }
+    return files.flatMap(file => {
+      if (file.status === "unchanged") return []
+      const result: PullRequestFile[] = []
+      // GitHub reports a rename under the destination path. Preserve removal of
+      // the old spec even if the destination is outside the configured paths.
+      if (file.status === "renamed" && file.previousFilename && file.previousFilename !== file.filename && isRelevant(file.previousFilename)) {
+        result.push({ filename: file.previousFilename, status: "removed" })
+      }
+      if (isRelevant(file.filename)) result.push(file)
+      return result
     })
-    return files.filter(file => file.filename.match(/\.ya?ml$/))
   }
   
   private async getExistingComment(request: {
@@ -111,11 +117,11 @@ export default class PullRequestCommenter {
     ref: string
   }): string {
     const { owner, repositoryName, ref } = params
-    const projectId = this.getProjectId({ repositoryName })
+    const projectPath = this.naming.projectPath(owner, repositoryName)
     const tableHTML = this.makeFileTableHTML(params)
     let result = "### 📖 Documentation Preview"
     result += "\n\n"
-    result += `The changes are now ready to previewed on <a href="${this.domain}/${owner}/${projectId}/${ref}">${this.siteName}</a> 🚀`
+    result += `The changes are now ready to previewed on <a href="${this.domain}${projectPath}/${ref}">${this.siteName}</a> 🚀`
     if (tableHTML) {
       result += "\n\n" + tableHTML
    }
@@ -130,15 +136,15 @@ export default class PullRequestCommenter {
   }) {
     const { files, owner, repositoryName, ref } = params
     const rows: { filename: string, status: string, button: string }[] = []
-    const projectId = this.getProjectId({ repositoryName })
+    const projectPath = this.naming.projectPath(owner, repositoryName)
     // Create rows for each file
     for (const file of files) {
       const status = this.getStatusText(file)
       let button = ""
       if (file.status != "removed") {
-        let link = `${this.domain}/${owner}/${projectId}/${ref}`
+        let link = `${this.domain}${projectPath}/${ref}`
         if (!this.isProjectConfigurationFile(file.filename)) {
-          link += `/${file.filename}`
+          link += `/${encodeURIComponent(file.filename)}`
         }
         button = ` <a href="${link}">Preview</a>`
       }
@@ -167,11 +173,7 @@ export default class PullRequestCommenter {
     }
   }
   
-  private getProjectId({ repositoryName }: { repositoryName: string }): string {
-    return repositoryName.replace(new RegExp(this.repositoryNameSuffix + "$"), "")
-  }
-  
   private isProjectConfigurationFile(filename: string) {
-    return getBaseFilename(filename) === getBaseFilename(this.projectConfigurationFilename)
+    return this.naming.configFileVariants.includes(filename)
   }
 }
