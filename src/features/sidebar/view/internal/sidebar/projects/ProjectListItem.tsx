@@ -13,7 +13,7 @@ import {
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation } from "@fortawesome/free-solid-svg-icons";
 import MenuItemHover from "@/common/ui/MenuItemHover";
-import { ProjectSummary } from "@/features/projects/domain";
+import { ProjectSummary, getProjectPath } from "@/features/projects/domain";
 import { useProjectSelection } from "@/features/projects/data";
 import ProjectAvatar, {
   Squircle as ProjectAvatarSquircle,
@@ -23,8 +23,8 @@ import { useCloseSidebarOnSelection } from "@/features/sidebar/data";
 const AVATAR_SIZE = { width: 40, height: 40 };
 
 const ProjectListItem = ({ project }: { project: ProjectSummary }) => {
-  const { selectedOwner, selectedName, selectProject } = useProjectSelection();
-  const selected = project.owner === selectedOwner && project.name === selectedName;
+  const { selectedProjectPath, selectProject } = useProjectSelection();
+  const selected = getProjectPath(project) === selectedProjectPath;
   const { closeSidebarIfNeeded } = useCloseSidebarOnSelection();
 
   return (

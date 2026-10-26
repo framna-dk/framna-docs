@@ -8,6 +8,7 @@ export interface ProjectListContextValue {
   loading: boolean
   error: string | null
   refresh: () => void
+  addProject: (project: ProjectSummary) => void
 }
 
 export const ProjectListContext = createContext<ProjectListContextValue | null>(null)

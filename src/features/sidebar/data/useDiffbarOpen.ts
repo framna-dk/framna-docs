@@ -6,11 +6,11 @@ import { DiffbarDismissals, getDiffbarSelection, updateDiffbarDismissals } from 
 const isDiffFeatureEnabled = process.env.NEXT_PUBLIC_ENABLE_DIFF_SIDEBAR === "true"
 
 export default function useDiffbarOpen() {
-  const { selectedOwner, selectedName, version, specification } = useProjectSelection()
+  const { selectedOwner, selectedName, selectedProjectPath, version, specification } = useProjectSelection()
   const [dismissals, setDismissals] = useSessionStorage<DiffbarDismissals>(
     "dismissedDiffbarCommits", {}, { initializeWithValue: false }
   )
-  const selection = getDiffbarSelection(selectedOwner, selectedName, version?.id, specification?.diffURL)
+  const selection = getDiffbarSelection(selectedOwner, selectedName, version?.id, specification?.diffURL, selectedProjectPath)
   const branchKey = selection?.branchKey
   const sha = selection?.sha
   const isOpen = isDiffFeatureEnabled && !!selection && dismissals[selection.branchKey] !== selection.sha

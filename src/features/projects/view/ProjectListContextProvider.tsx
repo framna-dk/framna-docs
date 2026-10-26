@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { ProjectSummary } from "@/features/projects/domain"
 import { ProjectListContext } from "./ProjectListContext"
+import ProjectListState from "../domain/ProjectListState"
 
 export default function ProjectListContextProvider({
   children
@@ -13,16 +14,30 @@ export default function ProjectListContextProvider({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const isRefreshingRef = useRef(false)
+  const listState = useRef(new ProjectListState()).current
+
+  const addProject = useCallback((project: ProjectSummary) => {
+    setProjects(listState.addProject(project))
+    setError(null)
+  }, [listState])
 
   const fetchProjects = useCallback(async (forceRefresh: boolean): Promise<ProjectSummary[] | null> => {
+    const request = listState.beginRequest()
     const url = forceRefresh ? "/api/projects?refresh=true" : "/api/projects"
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const { projects: newProjects } = await res.json()
-    setProjects(newProjects || [])
-    setError(null)
-    return newProjects || []
-  }, [])
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { projects: newProjects } = await res.json()
+      const applied = listState.applyResponse(request, newProjects || [])
+      if (!applied) return null
+      setProjects(applied)
+      setError(null)
+      return applied
+    } catch (error) {
+      if (listState.isCurrent(request)) throw error
+      return null
+    }
+  }, [listState])
 
   const refresh = useCallback(() => {
     if (isRefreshingRef.current) return
@@ -43,12 +58,10 @@ export default function ProjectListContextProvider({
       } finally {
         setLoading(false)
       }
-      fetchProjects(true).catch(err =>
-        console.error("Failed to refresh project list:", err)
-      )
+      refresh()
     }
     load()
-  }, [fetchProjects])
+  }, [fetchProjects, refresh])
 
   // Refresh on visibility change and focus
   useEffect(() => {
@@ -64,7 +77,7 @@ export default function ProjectListContextProvider({
   }, [refresh])
 
   return (
-    <ProjectListContext.Provider value={{ projects, loading, error, refresh }}>
+    <ProjectListContext.Provider value={{ projects, loading, error, refresh, addProject }}>
       {children}
     </ProjectListContext.Provider>
   )

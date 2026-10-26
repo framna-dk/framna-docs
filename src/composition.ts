@@ -56,6 +56,8 @@ import RemoteConfigEncoder from "./features/projects/domain/RemoteConfigEncoder"
 import { OasDiffCalculator } from "./features/diff/data/OasDiffCalculator"
 import { CachingOasDiffCalculator } from "./features/diff/data/CachingOasDiffCalculator"
 import { IOasDiffCalculator } from "./features/diff/data/IOasDiffCalculator"
+import PostgresProjectDiscoveryRepository from "./features/projects/data/PostgresProjectDiscoveryRepository"
+import RegisterProject from "./features/new-project/domain/RegisterProject"
 
 const gitHubAppCredentials = {
   appId: env.getOrThrow("GITHUB_APP_ID"),
@@ -185,6 +187,7 @@ export const encryptionService = new RsaEncryptionService({
 export const remoteConfigEncoder = new RemoteConfigEncoder(encryptionService)
 
 const gitHubCodeSearchDataSource = new GitHubCodeSearchDataSource(userGitHubClient)
+const discoveryRepository = new PostgresProjectDiscoveryRepository(db)
 
 const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   loginsDataSource: new GitHubLoginDataSource({
@@ -192,14 +195,22 @@ const gitHubProjectListDataSource = new GitHubProjectListDataSource({
   }),
   graphQlClient: userGitHubClient,
   codeSearchDataSource: gitHubCodeSearchDataSource,
+  discoveryRepository,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   hiddenRepositories: listFromCommaSeparatedString(env.get("HIDDEN_REPOSITORIES"))
 })
 
+export const registerProject = new RegisterProject({
+  candidates: gitHubProjectListDataSource,
+  repository: discoveryRepository,
+  repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX")
+})
+
 const projectListUserDataRepository = new KeyValueUserDataRepository({
   store: new RedisKeyValueStore(env.getOrThrow("REDIS_URL")),
-  baseKey: "projectList"
+  // Old lists contain ambiguous project names and omit configured repositories in collisions.
+  baseKey: "projectList-v2"
 })
 
 const projectListRepository = new ProjectListRepository({
@@ -214,6 +225,7 @@ export const projectListDataSource = new CachingProjectListDataSource({
 
 export const projectDetailsDataSource = new GitHubProjectDetailsDataSource({
   graphQlClient: userGitHubClient,
+  commitComparer: userGitHubClient,
   repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
   projectConfigurationFilename: env.getOrThrow("FRAMNA_DOCS_PROJECT_CONFIGURATION_FILENAME"),
   encryptionService: encryptionService,
@@ -231,7 +243,6 @@ export const gitHubHookHandler = new GitHubHookHandler({
   secret: env.getOrThrow("GITHUB_WEBHOOK_SECRET"),
   pullRequestEventHandler: new FilteringPullRequestEventHandler({
     filter: new RepositoryNameEventFilter({
-      repositoryNameSuffix: env.getOrThrow("REPOSITORY_NAME_SUFFIX"),
       allowlist: listFromCommaSeparatedString(env.get("GITHUB_WEBHOK_REPOSITORY_ALLOWLIST")),
       disallowlist: listFromCommaSeparatedString(env.get("GITHUB_WEBHOK_REPOSITORY_DISALLOWLIST"))
     }),

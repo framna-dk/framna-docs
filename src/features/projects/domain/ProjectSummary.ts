@@ -3,6 +3,7 @@ import { z } from "zod"
 export const ProjectSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
+  path: z.string().optional(),
   displayName: z.string(),
   owner: z.string(),
   imageURL: z.string().optional(),

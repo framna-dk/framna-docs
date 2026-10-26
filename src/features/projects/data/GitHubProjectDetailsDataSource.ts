@@ -1,5 +1,5 @@
 import { createHash } from "crypto"
-import { ProjectRepositoryNaming } from "@/common"
+import { IGitHubClient, ProjectRepositoryNaming } from "@/common"
 import { IEncryptionService } from "@/features/encrypt/EncryptionService"
 import {
   Project,
@@ -32,6 +32,8 @@ type GraphQLRef = {
 type GraphQLPullRequest = {
   number: number
   headRefName: string
+  headRefOid: string
+  headRepository: { nameWithOwner: string } | null
   baseRefName: string
   baseRefOid: string
   files?: {
@@ -56,63 +58,48 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
   private readonly naming: ProjectRepositoryNaming
   private readonly encryptionService: IEncryptionService
   private readonly remoteConfigEncoder: IRemoteConfigEncoder
+  private readonly commitComparer: Pick<IGitHubClient, "compareCommitsWithBasehead">
 
   constructor(config: {
     graphQlClient: IGitHubGraphQLClient
+    commitComparer: Pick<IGitHubClient, "compareCommitsWithBasehead">
     repositoryNameSuffix: string
     projectConfigurationFilename: string
     encryptionService: IEncryptionService
     remoteConfigEncoder: IRemoteConfigEncoder
   }) {
     this.graphQlClient = config.graphQlClient
+    this.commitComparer = config.commitComparer
     this.naming = new ProjectRepositoryNaming(config)
     this.encryptionService = config.encryptionService
     this.remoteConfigEncoder = config.remoteConfigEncoder
   }
 
-  async getProjectDetails(owner: string, repo: string): Promise<Project | null> {
-    const candidateNames = this.naming.hasSuffix(repo)
-      ? [repo]
-      : [this.naming.suffixedName(repo), repo]
-
-    for (const repoName of candidateNames) {
-      let response: Awaited<ReturnType<typeof this.fetchRepository>>
-      try {
-        // Candidate names must be tried in order; the fallback only runs if the first is not found.
-        // eslint-disable-next-line no-await-in-loop
-        response = await this.fetchRepository(owner, repoName)
-      } catch (error) {
-        if (this.isNotFoundError(error)) {
-          continue
-        }
-        throw error
-      }
-      if (!response.repository) {
-        continue
-      }
-
-      const repository = response.repository
-      // A repository found under its bare name participates only if it opted in via the
-      // configuration file. This mirrors list discovery and the content-serving guard.
-      if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) {
-        continue
-      }
-      const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
-
-      // eslint-disable-next-line no-await-in-loop
-      return await this.mapToProject({
-        owner,
-        name: repository.name,
-        defaultBranchRef: repository.defaultBranchRef,
-        configYml: repository.configYml,
-        configYaml: repository.configYaml,
-        branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-        tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
-        pullRequests
-      })
+  async getProjectDetails(owner: string, repo: string, options?: { exactRepository?: boolean }): Promise<Project | null> {
+    const repositoryName = options?.exactRepository ? repo : `${repo}${this.naming.suffix}`
+    let response: Awaited<ReturnType<typeof this.fetchRepository>>
+    try {
+      response = await this.fetchRepository(owner, repositoryName)
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null
+      throw error
     }
-
-    return null
+    const repository = response.repository
+    if (!repository) return null
+    // Exact repository routes still require the repository to opt in.
+    if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) return null
+    const branches: GraphQLRef[] = repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || []
+    const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [], owner, repository.name, branches)
+    return this.mapToProject({
+      owner,
+      name: repository.name,
+      defaultBranchRef: repository.defaultBranchRef,
+      configYml: repository.configYml,
+      configYaml: repository.configYaml,
+      branches,
+      tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+      pullRequests
+    })
   }
 
   private async fetchRepository(owner: string, name: string) {
@@ -164,6 +151,8 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
               node {
                 number
                 headRefName
+                headRefOid
+                headRepository { nameWithOwner }
                 baseRefName
                 baseRefOid
                 files(first: 100) {
@@ -181,10 +170,17 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     return await this.graphQlClient.graphql(request)
   }
 
-  private mapPullRequests(edges: { node: GraphQLPullRequest }[]): Map<string, PullRequestInfo> {
-    const map = new Map()
+  private mapPullRequests(
+    edges: { node: GraphQLPullRequest }[], owner: string, repository: string, branches: GraphQLRef[]
+  ): Map<string, PullRequestInfo> {
+    const map = new Map<string, PullRequestInfo>()
+    const branchOids = new Map(branches.map(branch => [branch.name, branch.target.oid]))
+    const expectedRepository = `${owner}/${repository}`.toLowerCase()
     for (const edge of edges) {
       const pr = edge.node
+      // A same-named fork branch (or a stale PR head) is not this local branch.
+      const localHeadOid = branchOids.get(pr.headRefName)
+      if (!localHeadOid || localHeadOid !== pr.headRefOid || pr.headRepository?.nameWithOwner.toLowerCase() !== expectedRepository) continue
       map.set(pr.headRefName, {
         number: pr.number,
         baseRefName: pr.baseRefName,
@@ -220,13 +216,17 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
       config?.specifications
     )
 
+    const pullRequests = config?.specifications?.length
+      ? await this.findConfiguredSpecChanges(data.owner, data.name, data.branches, data.pullRequests, config.specifications)
+      : data.pullRequests
+
     const branchVersions = data.branches.map(branch =>
       this.mapVersion({
         owner: data.owner,
         repoName: data.name,
         ref: branch,
         isDefault: branch.name === data.defaultBranchRef.name,
-        pr: data.pullRequests.get(branch.name),
+        pr: pullRequests.get(branch.name),
         specifications: specificationsForRef(branch)
       })
     )
@@ -251,9 +251,10 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     .map(v => this.setDefaultSpecification(v, config?.defaultSpecificationName))
 
     return {
-      id: `${data.owner}-${defaultName}`,
+      id: this.naming.projectId(data.owner, data.name),
       owner: data.owner,
       name: defaultName,
+      path: this.naming.projectPath(data.owner, data.name),
       displayName: config?.name || defaultName,
       versions,
       imageURL,
@@ -275,24 +276,56 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
         .filter(f => this.isOpenAPISpec(f.name))
         .map(f => ({ path: f.name }))
     }
-    const existenceByRefName = await this.fetchSpecExistence(
+    const blobsByRefName = await this.fetchSpecBlobs(
       owner,
       repoName,
       refs.map(ref => ({ name: ref.name, oid: ref.target.oid })),
       configSpecs
     )
     return ref => {
-      const existingPaths = existenceByRefName.get(ref.name) ?? []
-      return configSpecs.filter(spec => existingPaths.includes(spec.path))
+      const existingPaths = blobsByRefName.get(ref.name)
+      return configSpecs.filter(spec => existingPaths?.has(spec.path))
     }
   }
 
-  private async fetchSpecExistence(
+  private async findConfiguredSpecChanges(
+    owner: string,
+    repoName: string,
+    branches: GraphQLRef[],
+    pullRequests: Map<string, PullRequestInfo>,
+    specs: ProjectConfigSpecification[]
+  ): Promise<Map<string, PullRequestInfo>> {
+    const comparisons = await Promise.all(branches.map(async branch => {
+      const pr = pullRequests.get(branch.name)
+      if (!pr) return undefined
+      const { mergeBaseSha } = await this.commitComparer.compareCommitsWithBasehead({
+        repositoryOwner: owner,
+        repositoryName: repoName,
+        baseRefOid: pr.baseRefOid,
+        headRefOid: branch.target.oid
+      })
+      return { branch, pr, mergeBaseSha }
+    }))
+    const requests = comparisons.filter(comparison => comparison !== undefined)
+    // Batch only the configured paths, regardless of how many other files the PRs change.
+    const blobs = await this.fetchSpecBlobs(owner, repoName, requests.flatMap(({ branch, mergeBaseSha }, i) => [
+      { name: `base${i}`, oid: mergeBaseSha },
+      { name: `head${i}`, oid: branch.target.oid }
+    ]), specs)
+    return new Map(requests.map(({ branch, pr }, i) => {
+      const changedFiles = specs.filter(spec =>
+        blobs.get(`base${i}`)?.get(spec.path) !== blobs.get(`head${i}`)?.get(spec.path)
+      ).map(spec => spec.path)
+      return [branch.name, { ...pr, changedFiles }] as const
+    }))
+  }
+
+  private async fetchSpecBlobs(
     owner: string,
     repoName: string,
     refs: Array<{ name: string; oid: string }>,
     specs: ProjectConfigSpecification[]
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Map<string, Map<string, string>>> {
     if (refs.length === 0 || specs.length === 0) return new Map()
 
     const refsPerQuery = Math.max(1, Math.floor(MAX_SPEC_EXISTENCE_ALIASES_PER_QUERY / specs.length))
@@ -302,21 +335,21 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     }
 
     const chunkResults = await Promise.all(
-      chunks.map(chunk => this.fetchSpecExistenceChunk(owner, repoName, chunk, specs))
+      chunks.map(chunk => this.fetchSpecBlobsChunk(owner, repoName, chunk, specs))
     )
-    const merged = new Map<string, string[]>()
+    const merged = new Map<string, Map<string, string>>()
     for (const chunkResult of chunkResults) {
       chunkResult.forEach((paths, refName) => merged.set(refName, paths))
     }
     return merged
   }
 
-  private async fetchSpecExistenceChunk(
+  private async fetchSpecBlobsChunk(
     owner: string,
     repoName: string,
     refs: Array<{ name: string; oid: string }>,
     specs: ProjectConfigSpecification[]
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Map<string, Map<string, string>>> {
     const aliases = refs.flatMap((ref, ri) =>
       specs.map((spec, si) =>
         `r${ri}s${si}: object(expression: ${JSON.stringify(`${ref.oid}:${spec.path}`)}) { ... on Blob { oid } }`
@@ -333,13 +366,13 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
 
     const response = await this.graphQlClient.graphql({ query, variables: { owner, name: repoName } })
 
-    const result = new Map<string, string[]>()
+    const result = new Map<string, Map<string, string>>()
     refs.forEach((ref, ri) => {
-      const existingPaths: string[] = []
+      const existingPaths = new Map<string, string>()
       specs.forEach((spec, si) => {
         const alias = `r${ri}s${si}`
         if (response.repository?.[alias] != null) {
-          existingPaths.push(spec.path)
+          existingPaths.set(spec.path, response.repository[alias].oid)
         }
       })
       result.set(ref.name, existingPaths)

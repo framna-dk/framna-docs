@@ -1,4 +1,5 @@
 import { jest } from "@jest/globals"
+import type IProjectDiscoveryRepository from "@/features/projects/domain/IProjectDiscoveryRepository"
 import { GitHubProjectListDataSource } from "@/features/projects/data"
 import { IGitHubLoginDataSource, IGitHubGraphQLClient } from "@/features/projects/domain"
 import IGitHubCodeSearchDataSource, { CodeSearchRepository } from "@/features/projects/domain/IGitHubCodeSearchDataSource"
@@ -29,6 +30,7 @@ const createSut = (overrides: {
   loginsDataSource?: IGitHubLoginDataSource
   graphQlClient?: IGitHubGraphQLClient
   codeSearchDataSource?: IGitHubCodeSearchDataSource
+  discoveryRepository?: IProjectDiscoveryRepository
   repositoryNameSuffix?: string
   projectConfigurationFilename?: string
   hiddenRepositories?: string[]
@@ -37,6 +39,7 @@ const createSut = (overrides: {
     loginsDataSource: overrides.loginsDataSource || createMockLoginsDataSource(),
     graphQlClient: overrides.graphQlClient || createMockGraphQLClient(),
     codeSearchDataSource: overrides.codeSearchDataSource || createMockCodeSearchDataSource(),
+    discoveryRepository: overrides.discoveryRepository || { getRepositories: async () => [], add: async () => {} },
     repositoryNameSuffix: overrides.repositoryNameSuffix || "-openapi",
     projectConfigurationFilename: overrides.projectConfigurationFilename || ".framna-docs.yml",
     hiddenRepositories: overrides.hiddenRepositories || []
@@ -504,8 +507,7 @@ describe("GitHubProjectListDataSource", () => {
       expect(result[0].displayName).toBe("Backend Service")
     })
 
-    test("It drops a config-file repo shadowed by a suffixed repo with the same project name", async () => {
-      const consoleWarn = jest.spyOn(console, "warn").mockImplementation(() => {})
+    test("It keeps a configured bare repository and its suffixed counterpart as distinct projects", async () => {
       const graphQlClient = createMockGraphQLClient([
         {
           search: {
@@ -523,9 +525,12 @@ describe("GitHubProjectListDataSource", () => {
 
       const result = await sut.getProjectList()
 
-      expect(result).toHaveLength(1)
-      expect(result[0].url).toBe("https://github.com/acme/polaris-openapi")
-      consoleWarn.mockRestore()
+      expect(result).toHaveLength(2)
+      expect(new Set(result.map(project => project.id)).size).toBe(2)
+      expect(result.map(project => project.path).sort()).toEqual(["/acme/polaris", "/repos/acme/polaris"])
+      expect(result.map(project => project.url).sort()).toEqual([
+        "https://github.com/acme/polaris", "https://github.com/acme/polaris-openapi"
+      ])
     })
 
     test("It returns suffix-discovered repos when code search finds nothing", async () => {
@@ -543,6 +548,185 @@ describe("GitHubProjectListDataSource", () => {
 
       expect(result).toHaveLength(1)
       expect(result[0].name).toBe("project")
+    })
+  })
+
+  describe("database discovery", () => {
+    const configuredRepo = (name: string, owner = "acme", isPrivate = true) => ({
+      name, owner: { login: owner }, isPrivate,
+      configYml: { text: `name: ${name}` }
+    })
+
+    function registeredSut(options: {
+      registered: { owner: string; name: string }[]
+      responses: Record<string, unknown>
+      logins?: string[]
+      hiddenRepositories?: string[]
+      suffixRepos?: unknown[]
+      codeSearchRepos?: CodeSearchRepository[]
+    }) {
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (request.query.includes("RegisteredRepository")) {
+          const key = `${request.variables!.owner}/${request.variables!.name}`
+          const result = options.responses[key]
+          if (result instanceof Error) throw result
+          return { repository: result ?? null }
+        }
+        if (request.query.includes("ConfigFileRepos")) {
+          return { repo_0: options.suffixRepos?.[0] }
+        }
+        return { search: { results: options.suffixRepos ?? [], pageInfo: { hasNextPage: false } } }
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        discoveryRepository: { getRepositories: async () => options.registered, add: async () => {} },
+        loginsDataSource: createMockLoginsDataSource(options.logins),
+        hiddenRepositories: options.hiddenRepositories,
+        codeSearchDataSource: createMockCodeSearchDataSource(options.codeSearchRepos)
+      })
+      return { sut, graphql }
+    }
+
+    test("It includes an accessible registered private repository before code search indexes it", async () => {
+      const { sut, graphql } = registeredSut({
+        registered: [{ owner: "acme", name: "aurora" }],
+        responses: { "acme/aurora": configuredRepo("aurora") }
+      })
+
+      const projects = await sut.getProjectList()
+
+      expect(projects.map(project => project.name)).toEqual(["aurora"])
+      expect(graphql).toHaveBeenCalledWith(expect.objectContaining({
+        variables: { owner: "acme", name: "aurora" },
+        query: expect.stringContaining("repository(owner: $owner, name: $name)")
+      }))
+    })
+
+    test("It skips inaccessible and deleted candidates without dropping accessible projects", async () => {
+      const notFound = Object.assign(new Error("Not found"), { errors: [{ type: "NOT_FOUND" }] })
+      const { sut } = registeredSut({
+        registered: ["aurora", "deleted", "inaccessible"].map(name => ({ owner: "acme", name })),
+        responses: { "acme/aurora": configuredRepo("aurora"), "acme/inaccessible": notFound }
+      })
+
+      expect((await sut.getProjectList()).map(project => project.name)).toEqual(["aurora"])
+    })
+
+    test("It includes public candidates only for the user's own account or organizations", async () => {
+      const { sut } = registeredSut({
+        registered: ["viewer", "Acme", "stranger"].map(owner => ({ owner, name: "aurora" })),
+        logins: ["viewer", "acme"],
+        responses: {
+          "viewer/aurora": configuredRepo("aurora", "viewer", false),
+          "Acme/aurora": configuredRepo("aurora", "Acme", false),
+          "stranger/aurora": configuredRepo("aurora", "stranger", false)
+        }
+      })
+
+      expect((await sut.getProjectList()).map(project => project.owner).sort()).toEqual(["Acme", "viewer"])
+    })
+
+    test("It deduplicates registrations and repositories already found through automatic discovery", async () => {
+      const repo = configuredRepo("aurora-openapi")
+      const { sut, graphql } = registeredSut({
+        registered: [{ owner: "acme", name: "aurora-openapi" }, { owner: "ACME", name: "Aurora-OpenAPI" }],
+        responses: { "acme/aurora-openapi": repo },
+        suffixRepos: [repo],
+        codeSearchRepos: [{ owner: "acme", name: "aurora-openapi", isPrivate: true }]
+      })
+
+      expect(await sut.getProjectList()).toHaveLength(1)
+      expect(graphql.mock.calls.filter(([request]) => request.query.includes("RegisteredRepository"))).toHaveLength(0)
+    })
+
+    test("It skips candidates found through code search while probing the remaining candidates", async () => {
+      const discovered = configuredRepo("aurora")
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (request.query.includes("RegisteredRepository")) return { repository: configuredRepo(request.variables!.name) }
+        if (request.query.includes("ConfigFileRepos")) return { repo_0: discovered }
+        return { search: { results: [], pageInfo: { hasNextPage: false } } }
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        codeSearchDataSource: createMockCodeSearchDataSource([{ owner: "acme", name: "aurora", isPrivate: true }]),
+        discoveryRepository: { getRepositories: async () => [{ owner: "ACME", name: "Aurora" }, { owner: "acme", name: "borealis" }], add: async () => {} }
+      })
+      expect((await sut.getProjectList()).map(project => project.name)).toEqual(["aurora", "borealis"])
+      const probes = graphql.mock.calls.filter(([request]) => request.query.includes("RegisteredRepository"))
+      expect(probes).toHaveLength(1)
+      expect(probes[0][0].variables).toEqual({ owner: "acme", name: "borealis" })
+    })
+
+    test("It bounds concurrent database candidate probes", async () => {
+      let release!: () => void
+      let firstBatchStarted!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const started = new Promise<void>(resolve => { firstBatchStarted = resolve })
+      let active = 0
+      let peak = 0
+      let count = 0
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (!request.query.includes("RegisteredRepository")) return { search: { results: [], pageInfo: { hasNextPage: false } } }
+        active++
+        peak = Math.max(peak, active)
+        if (++count === 4) firstBatchStarted()
+        await gate
+        active--
+        return { repository: configuredRepo(request.variables!.name) }
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        discoveryRepository: { getRepositories: async () => Array.from({ length: 11 }, (_, i) => ({ owner: "acme", name: `service-${i}` })), add: async () => {} }
+      })
+      const pending = sut.getProjectList()
+      await started
+      const initialCount = count
+      release()
+      expect(await pending).toHaveLength(11)
+      expect(initialCount).toBe(4)
+      expect(peak).toBeLessThanOrEqual(4)
+    })
+
+    test("It stops scheduling candidate batches when a service error occurs", async () => {
+      let count = 0
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>().mockImplementation(async request => {
+        if (!request.query.includes("RegisteredRepository")) return { search: { results: [], pageInfo: { hasNextPage: false } } }
+        count++
+        throw new Error("Rate limited")
+      })
+      const sut = createSut({
+        graphQlClient: { graphql },
+        discoveryRepository: { getRepositories: async () => Array.from({ length: 11 }, (_, i) => ({ owner: "acme", name: `service-${i}` })), add: async () => {} }
+      })
+      await expect(sut.getProjectList()).rejects.toThrow("Rate limited")
+      expect(count).toBeLessThanOrEqual(4)
+    })
+
+    test("It applies opt-in and hidden-repository rules to registered candidates", async () => {
+      const { sut } = registeredSut({
+        registered: ["aurora", "hidden", "not-opted-in", "legacy-openapi"].map(name => ({ owner: "acme", name })),
+        hiddenRepositories: ["acme/hidden"],
+        responses: {
+          "acme/aurora": configuredRepo("aurora"),
+          "acme/hidden": configuredRepo("hidden"),
+          "acme/not-opted-in": { name: "not-opted-in", owner: { login: "acme" }, isPrivate: true },
+          "acme/legacy-openapi": { name: "legacy-openapi", owner: { login: "acme" }, isPrivate: true }
+        }
+      })
+
+      expect((await sut.getProjectList()).map(project => project.name)).toEqual(["aurora", "legacy"])
+    })
+
+    test.each([
+      new Error("Rate limited"),
+      Object.assign(new Error("Mixed failures"), { errors: [{ type: "NOT_FOUND" }, { type: "FORBIDDEN" }] })
+    ])("It surfaces service errors instead of caching an incomplete list: %s", async error => {
+      const { sut } = registeredSut({
+        registered: [{ owner: "acme", name: "aurora" }],
+        responses: { "acme/aurora": error }
+      })
+
+      await expect(sut.getProjectList()).rejects.toThrow(error)
     })
   })
 })

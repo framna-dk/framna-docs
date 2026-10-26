@@ -37,6 +37,15 @@ jobs:
           done
       - name: Run create-tables.sql
         run: psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -f create-tables.sql
+      - name: Verify discovery migration and candidate registration
+        run: |
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -c "DROP TABLE project_discovery_repositories;"
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -f migrations/001-project-discovery-repositories.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -f migrations/001-project-discovery-repositories.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -c "INSERT INTO project_discovery_repositories (owner, name) VALUES ('acme', 'aurora') ON CONFLICT (owner, name) DO NOTHING;"
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -c "INSERT INTO project_discovery_repositories (owner, name) VALUES ('acme', 'aurora') ON CONFLICT (owner, name) DO NOTHING;"
+          COUNT=$(psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -t -A -c "SELECT count(*) FROM project_discovery_repositories WHERE owner = 'acme' AND name = 'aurora';")
+          test "$COUNT" -eq 1
       - name: Ensure tables were created
         run: |
           COUNT=$(psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ${{ env.DATABASE_NAME }} -t -A -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")

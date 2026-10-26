@@ -1,9 +1,9 @@
 "use client"
 
 import { useEffect } from "react"
-import { useParams } from "next/navigation"
+import { usePathname } from "next/navigation"
 import ErrorMessage from "@/common/ui/ErrorMessage"
-import { updateWindowTitle } from "@/features/projects/domain"
+import { updateWindowTitle, parseProjectRoute } from "@/features/projects/domain"
 import { useProjectSelection } from "@/features/projects/data"
 import Documentation from "@/features/projects/view/Documentation"
 import NotFound from "@/features/projects/view/NotFound"
@@ -11,29 +11,26 @@ import { useProjectDetails } from "@/features/projects/view/ProjectDetailsContex
 import LoadingIndicator from "@/common/ui/LoadingIndicator"
 
 export default function Page() {
-  const params = useParams()
-  const slug = params.slug as string[] | undefined
-  const owner = slug?.[0]
-  const name = slug?.[1]
+  const { owner, name, exactRepository } = parseProjectRoute(usePathname())
 
   const { fetchProject, isLoading, getError, getProject } = useProjectDetails()
   const { project, version, specification, navigateToSelectionIfNeeded } = useProjectSelection()
 
-  const loading = owner && name ? isLoading(owner, name) : false
-  const error = owner && name ? getError(owner, name) : null
+  const loading = owner && name ? isLoading(owner, name, exactRepository) : false
+  const error = owner && name ? getError(owner, name, exactRepository) : null
 
   // cachedProject distinguishes not-yet-fetched (undefined) from not-found (null).
   // useProjectSelection converts null→undefined, so we read the cache directly here.
-  const cachedProject = owner && name ? getProject(owner, name) : undefined
+  const cachedProject = owner && name ? getProject(owner, name, exactRepository) : undefined
 
   // Fetch project details when the page loads.
   // Only fetch when the project is undefined (not yet requested).
   // A null value means it was fetched and not found — don't retry.
   useEffect(() => {
     if (owner && name && cachedProject === undefined && !loading) {
-      fetchProject(owner, name)
+      fetchProject(owner, name, exactRepository)
     }
-  }, [owner, name, loading, cachedProject, fetchProject])
+  }, [owner, name, exactRepository, loading, cachedProject, fetchProject])
 
   // Ensure the URL reflects the current selection of project, version, and specification.
   useEffect(() => {
@@ -51,6 +48,9 @@ export default function Page() {
       specification
     })
   }, [project, version, specification])
+
+  // Incomplete /repos/ links are invalid, not a pending project lookup.
+  if (!owner || !name) return <NotFound/>
 
   if (loading || (cachedProject === undefined && !error)) {
     return <LoadingIndicator />
