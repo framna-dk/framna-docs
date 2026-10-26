@@ -72,3 +72,9 @@ test("It gives colliding repository names separate paths and identities", () => 
   expect(sut.projectId("acme", "aurora-openapi")).toBe("acme-aurora")
   expect(sut.projectId("acme", "aurora")).toBe("repo:acme/aurora")
 })
+
+test.each(["repos", "Repos"])("It escapes the reserved owner %s through an exact repository path", owner => {
+  const sut = createSut()
+  expect(sut.projectPath(owner, "aurora-openapi")).toBe(`/repos/${owner}/aurora-openapi`)
+  expect(sut.projectPath(owner, "aurora")).toBe(`/repos/${owner}/aurora`)
+})

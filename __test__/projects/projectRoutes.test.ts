@@ -40,3 +40,24 @@ test("It does not reinterpret a prefixed route as a same-named legacy project", 
   expect(getProjectSelectionFromPath({ projects: [legacy], path: monorepo.path }).project).toBeUndefined()
   expect(getProjectSelectionFromPath({ projects: [monorepo], path: legacy.path }).project).toBeUndefined()
 })
+
+test("It selects and navigates a suffixed repository owned by the reserved namespace", () => {
+  const project = { ...legacy, owner: "repos", id: "repos-aurora", path: "/repos/repos/aurora-openapi" }
+  const path = `${project.path}/feature/api/services%2Fuser%2Fopenapi.yaml`
+  expect(parseProjectRoute(path)).toMatchObject({ owner: "repos", name: "aurora-openapi", exactRepository: true })
+  const selection = getProjectSelectionFromPath({ projects: [project], path })
+  expect(selection.project).toBe(project)
+  expect(selection.version!.id).toBe("feature/api")
+  expect(selection.specification!.id).toBe("services/user/openapi.yaml")
+  const push = jest.fn<(path: string) => void>()
+  new ProjectNavigator({ router: { push, replace: () => {} }, pathnameReader: { pathname: project.path } })
+    .navigateToVersion(project, "feature/api", "User API")
+  expect(push).toHaveBeenCalledWith(path)
+})
+
+test("It does not guess legacy-owner semantics for old reserved-prefix links", () => {
+  const parsed = parseProjectRoute("/repos/aurora")
+  expect(parsed.exactRepository).toBe(true)
+  expect(parsed.name).toBeUndefined()
+  expect(parseProjectRoute("/repos/aurora/main/api.yaml")).toMatchObject({ owner: "aurora", name: "main", exactRepository: true })
+})

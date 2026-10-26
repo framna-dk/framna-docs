@@ -41,8 +41,11 @@ export default class ProjectRepositoryNaming {
   }
 
   projectPath(owner: string, repositoryName: string): string {
-    const prefix = this.hasSuffix(repositoryName) ? "" : "/repos"
-    return `${prefix}/${encodeURIComponent(owner)}/${encodeURIComponent(this.projectName(repositoryName))}`
+    // The reserved prefix cannot also be used as a legacy owner segment.
+    if (!this.hasSuffix(repositoryName) || owner.toLowerCase() === "repos") {
+      return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}`
+    }
+    return `/${encodeURIComponent(owner)}/${encodeURIComponent(this.projectName(repositoryName))}`
   }
 
   projectId(owner: string, repositoryName: string): string {

@@ -39,6 +39,17 @@ test.each([
   expect(body).toContain(`href="https://example.com${path}/feature/api/services%2Fuser%2Fopenapi.yaml"`)
 })
 
+test("It generates exact preview links for a suffixed repository owned by repos", async () => {
+  const { sut, client, request } = configuredCommenter({
+    text: "specifications:\n  - path: services/user/openapi.yaml",
+    files: [{ filename: "services/user/openapi.yaml", status: "modified" }]
+  })
+  await sut.commentPullRequest({ ...request, repositoryOwner: "repos", repositoryName: "aurora-openapi" })
+  const body = client.addCommentToPullRequest.mock.calls[0][0].body
+  expect(body).toContain('href="https://example.com/repos/repos/aurora-openapi/feature/api"')
+  expect(body).toContain('href="https://example.com/repos/repos/aurora-openapi/feature/api/services%2Fuser%2Fopenapi.yaml"')
+})
+
 test.each(["configYml", "configYaml"] as const)("It comments on configured nested specs in a bare repository using %s", async variant => {
   const { sut, client, request } = configuredCommenter({
     variant,

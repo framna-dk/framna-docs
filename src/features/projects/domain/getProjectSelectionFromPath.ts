@@ -30,7 +30,7 @@ export default function getProjectSelectionFromPath({
   }
   const route = parseProjectRoute(path)
   const basePath = route.name ? route.basePath : (projects.length === 1 ? getProjectPath(projects[0]) : route.basePath)
-  const project = projects.find(e => e.owner == owner && e.name == projectName && getProjectPath(e) === basePath)
+  const project = projects.find(e => e.owner == owner && getProjectPath(e) === basePath)
   if (!project) {
     return {}
   }

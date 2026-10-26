@@ -60,7 +60,7 @@ const createRepositoryResponse = (overrides: {
   configYml?: { text: string } | null
   branches?: { name: string; target: { oid: string; tree: { entries: { name: string }[] } } }[]
   tags?: { name: string; target: { oid: string; tree: { entries: { name: string }[] } } }[]
-  pullRequests?: { number: number; headRefName: string; baseRefName: string; baseRefOid: string; files?: { nodes: { path: string }[] } }[]
+  pullRequests?: { number: number; headRefName: string; headRefOid?: string; headRepository?: { nameWithOwner: string } | null; baseRefName: string; baseRefOid: string; files?: { nodes: { path: string }[] } }[]
 } = {}) => ({
   repository: {
     name: overrides.name || "my-project-openapi",
@@ -75,7 +75,11 @@ const createRepositoryResponse = (overrides: {
       edges: (overrides.tags || []).map(node => ({ node }))
     },
     pullRequests: {
-      edges: (overrides.pullRequests || []).map(node => ({ node }))
+      edges: (overrides.pullRequests || []).map(node => ({ node: {
+        headRepository: { nameWithOwner: `acme/${overrides.name || "my-project-openapi"}` },
+        headRefOid: overrides.branches?.find(branch => branch.name === node.headRefName)?.target.oid ?? "abc123",
+        ...node
+      } }))
     }
   }
 })
@@ -629,6 +633,45 @@ specifications:
   })
 
   describe("pull requests", () => {
+    test.each([
+      { kind: "fork", headRepository: { nameWithOwner: "contributor/aurora" }, headRefOid: "feature123" },
+      { kind: "stale local head", headRepository: { nameWithOwner: "acme/aurora" }, headRefOid: "older-commit" },
+      { kind: "deleted head repository", headRepository: null, headRefOid: "feature123" }
+    ])("It does not associate a $kind PR with a same-named local branch", async metadata => {
+      const path = "services/user/openapi.yaml"
+      const graphql = jest.fn<IGitHubGraphQLClient["graphql"]>()
+        .mockResolvedValueOnce(createRepositoryResponse({
+          name: "aurora", configYml: { text: `specifications:\n  - path: ${path}` },
+          branches: [{ name: "feature", target: { oid: "feature123", tree: { entries: [] } } }],
+          pullRequests: [{
+            number: 7, headRefName: "feature", baseRefName: "main", baseRefOid: "base123",
+            headRefOid: metadata.headRefOid, headRepository: metadata.headRepository,
+            files: { nodes: [{ path: "README.md" }] }
+          }]
+        }))
+        .mockResolvedValueOnce({ repository: { r0s0: { oid: "changed-spec" } } })
+      const compareCommitsWithBasehead = jest.fn<IGitHubClient["compareCommitsWithBasehead"]>()
+      const result = await createSut({ graphQlClient: { graphql }, commitComparer: { compareCommitsWithBasehead } })
+        .getProjectDetails("acme", "aurora", { exactRepository: true })
+      expect(result!.versions[0].specifications[0].diffURL).toBeUndefined()
+      expect(result!.versions[0].specifications[0].diffPrUrl).toBeUndefined()
+      expect(compareCommitsWithBasehead).not.toHaveBeenCalled()
+      expect(graphql).toHaveBeenCalledTimes(2)
+      expect(graphql.mock.calls[0][0].query).toContain("headRepository { nameWithOwner }")
+      expect(graphql.mock.calls[0][0].query).toContain("headRefOid")
+    })
+
+    test.each([false, true])("It preserves the matching local PR when a same-named fork PR is present (fork first: %s)", async forkFirst => {
+      const local = { number: 42, headRefName: "feature", headRefOid: "feature123", headRepository: { nameWithOwner: "ACME/my-project-openapi" }, baseRefName: "main", baseRefOid: "base123", files: { nodes: [{ path: "api.yml" }] } }
+      const fork = { ...local, number: 7, headRepository: { nameWithOwner: "contributor/my-project-openapi" } }
+      const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
+        branches: [{ name: "feature", target: { oid: "feature123", tree: { entries: [{ name: "api.yml" }] } } }],
+        pullRequests: forkFirst ? [fork, local] : [local, fork]
+      }))
+      const result = await createSut({ graphQlClient }).getProjectDetails("acme", "my-project")
+      expect(result!.versions[0].specifications[0].diffPrUrl).toBe("https://github.com/acme/my-project-openapi/pull/42")
+    })
+
     test("It adds diff URL for changed files in PRs", async () => {
       const graphQlClient = createMockGraphQLClient(createRepositoryResponse({
         branches: [{

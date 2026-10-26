@@ -49,6 +49,9 @@ export default function Page() {
     })
   }, [project, version, specification])
 
+  // Incomplete /repos/ links are invalid, not a pending project lookup.
+  if (!owner || !name) return <NotFound/>
+
   if (loading || (cachedProject === undefined && !error)) {
     return <LoadingIndicator />
   }

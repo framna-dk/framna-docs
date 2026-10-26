@@ -32,6 +32,8 @@ type GraphQLRef = {
 type GraphQLPullRequest = {
   number: number
   headRefName: string
+  headRefOid: string
+  headRepository: { nameWithOwner: string } | null
   baseRefName: string
   baseRefOid: string
   files?: {
@@ -86,14 +88,15 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     if (!repository) return null
     // Exact repository routes still require the repository to opt in.
     if (!this.naming.hasSuffix(repository.name) && !repository.configYml && !repository.configYaml) return null
-    const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [])
+    const branches: GraphQLRef[] = repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || []
+    const pullRequests = this.mapPullRequests(repository.pullRequests?.edges || [], owner, repository.name, branches)
     return this.mapToProject({
       owner,
       name: repository.name,
       defaultBranchRef: repository.defaultBranchRef,
       configYml: repository.configYml,
       configYaml: repository.configYaml,
-      branches: repository.branches?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
+      branches,
       tags: repository.tags?.edges?.map((e: { node: GraphQLRef }) => e.node) || [],
       pullRequests
     })
@@ -148,6 +151,8 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
               node {
                 number
                 headRefName
+                headRefOid
+                headRepository { nameWithOwner }
                 baseRefName
                 baseRefOid
                 files(first: 100) {
@@ -165,10 +170,17 @@ export default class GitHubProjectDetailsDataSource implements IProjectDetailsDa
     return await this.graphQlClient.graphql(request)
   }
 
-  private mapPullRequests(edges: { node: GraphQLPullRequest }[]): Map<string, PullRequestInfo> {
-    const map = new Map()
+  private mapPullRequests(
+    edges: { node: GraphQLPullRequest }[], owner: string, repository: string, branches: GraphQLRef[]
+  ): Map<string, PullRequestInfo> {
+    const map = new Map<string, PullRequestInfo>()
+    const branchOids = new Map(branches.map(branch => [branch.name, branch.target.oid]))
+    const expectedRepository = `${owner}/${repository}`.toLowerCase()
     for (const edge of edges) {
       const pr = edge.node
+      // A same-named fork branch (or a stale PR head) is not this local branch.
+      const localHeadOid = branchOids.get(pr.headRefName)
+      if (!localHeadOid || localHeadOid !== pr.headRefOid || pr.headRepository?.nameWithOwner.toLowerCase() !== expectedRepository) continue
       map.set(pr.headRefName, {
         number: pr.number,
         baseRefName: pr.baseRefName,
